@@ -1,0 +1,13 @@
+{
+    "files.exclude": {
+        "**/.apivcs": false,
+        "**/.gitignore": false,
+        "**/.designer.json": false,
+        "**/.exchange.xml": false,
+        "**/.vscode": false,
+        "**/.mvn": false,
+        "**/.tmp": false,
+        "**/.settings": false,
+        "**/.exchange_modules_tmp": false
+    }
+}

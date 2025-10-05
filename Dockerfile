@@ -9,21 +9,16 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
-# RUN apt-get update && apt-get install -y \
-#     net-tools \
-#     dnsutils \
-#     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml poetry.lock ./
+# Copy dependency files
+COPY pyproject.toml poetry.lock* ./
 
+# Install dependencies without creating a virtual environment in Docker
 RUN poetry config virtualenvs.create false \
- && poetry install --no-root --no-interaction --no-ansi
+    && poetry install --no-interaction --no-ansi --no-dev
 
 COPY ./src/ ./
 
-ENV USER_ID="$(id -u)"
-ENV GROUP_ID="$(id -g)"
-
-EXPOSE 53/udp 80 443
+EXPOSE 8080
 
 CMD ["python", "server.py"]
