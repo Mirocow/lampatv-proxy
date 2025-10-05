@@ -7,7 +7,7 @@ services:
       - NET_ADMIN
       - NET_BIND_SERVICE
     ports:
-      - "8282:80"
+      - "8282:8080"
     restart: unless-stopped
     volumes:
       - type: bind
