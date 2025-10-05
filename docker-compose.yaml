@@ -7,12 +7,8 @@ services:
       - NET_ADMIN
       - NET_BIND_SERVICE
     ports:
-      - "80:80"
+      - "8282:80"
       - "443:443"
-      #- "5353:53/udp"  # DNS работает по UDP
-    networks:
-       localnetwork: 
-         ipv4_address: "192.168.1.11"
     restart: unless-stopped
     volumes:
       - type: bind
@@ -22,17 +18,3 @@ services:
       TZ: UTC
       USER_ID: ${USER_ID:-1000}
       GROUP_ID: ${GROUP_ID:-1000}
-
-  networks:
-    localnetwork:
-      name: localnetwork
-      # ipvlan в режиме l3 блокирует L2-доступ между хостом и контейнером. Используйте macvlan
-      driver: macvlan
-      #driver_opts:
-        #parent: eno1
-        #ipvlan_mode: l3
-      ipam:
-        config:
-          - subnet: "192.168.1.0/24"
-            ip_range: "192.168.1.1/24"
-            gateway: "192.168.1.1"
