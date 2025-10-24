@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements.test.txt ./
+
+RUN pip install --no-cache-dir -r requirements.test.txt
+
+COPY src/ ./src/
+COPY tests/ ./tests/
+
+# Если используете debug_runner.py, добавьте:
+# COPY debug_runner.py ./
+
+RUN groupadd -r lampa && useradd -r -g lampa lampa
+RUN chown -R lampa:lampa /app
+
+USER lampa

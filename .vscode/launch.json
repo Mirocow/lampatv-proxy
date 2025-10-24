@@ -2,21 +2,32 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Flask Server",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/app.py", // Укажите путь к вашему main файлу
-            "console": "integratedTerminal",
-            "env": {
-                "FLASK_DEBUG": "1"
-            }
+            "name": "Python: Remote Attach",
+            "type": "python",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}/src",
+                    "remoteRoot": "/app/src"
+                }
+            ],
+            "justMyCode": false
         },
         {
-            "name": "Python Debugger: Debug Flask Server",
-            "type": "debugpy",
+            "name": "Python: Run Tests in Docker",
+            "type": "python",
             "request": "launch",
-            "program": "${workspaceFolder}/server.py",
-            "console": "integratedTerminal"
+            "program": "-m",
+            "args": ["pytest", "tests/", "-v", "-s", "--tb=short"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "/app"
+            }
         }
     ]
 }
