@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from typing import Optional
 import uvicorn
 import base64
 import json
@@ -114,32 +115,6 @@ def is_video_url(url: str) -> bool:
     return any(url.lower().endswith(ext) for ext in video_extensions)
 
 
-def parse_range_header(range_header: str, file_size: int) -> tuple:
-    """Парсит заголовок Range и возвращает начальный и конечный байты"""
-    if not range_header:
-        return 0, file_size - 1
-
-    # Формат: bytes=start-end
-    range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
-    if not range_match:
-        return 0, file_size - 1
-
-    start = int(range_match.group(1))
-    end = range_match.group(2)
-
-    if end:
-        end = int(end)
-    else:
-        end = file_size - 1
-
-    # Ограничиваем максимальный размер диапазона
-    if end - start > CONFIG['max_range_size']:
-        end = start + CONFIG['max_range_size'] - 1
-        if end >= file_size:
-            end = file_size - 1
-
-    return start, end
-
 
 # В функции get_content_info добавить обработку исключений
 async def get_content_info(url: str, headers: Dict) -> Dict:
@@ -192,6 +167,7 @@ async def stream_video_with_range(
     """Потоковая передача видео с поддержкой Range запросов для перемотки"""
 
     logger.info(f"Streaming video with range support from: {target_url}")
+    logger.debug(f"Range header: {range_header}")
 
     # Подготавливаем заголовки для исходного сервера
     headers = {
@@ -200,33 +176,35 @@ async def stream_video_with_range(
         'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8,ru;q=0.7',
     }
 
-    # Добавляем пользовательские заголовки
+    # Добавляем пользовательские заголовки (исключая конфликтующие)
     if request_headers:
         headers.update({k: v for k, v in request_headers.items()
-                       if k.lower() not in ['host', 'content-length', 'range']})
+                       if k.lower() not in ['host', 'content-length', 'range', 'accept-encoding']})
 
-    # Получаем информацию о контенте
-    content_info = await get_content_info(target_url, headers)
-
-    # Проверяем статус ответа
-    if content_info['status_code'] == 404:
-        logger.error(f"Video not found (404): {target_url}")
-        raise HTTPException(status_code=404, detail="Video not found")
-    elif content_info['status_code'] >= 400:
-        logger.error(
-            f"Source server error {content_info['status_code']}: {target_url}")
-        raise HTTPException(
-            status_code=content_info['status_code'], detail=f"Source server error: {content_info['status_code']}")
+    # Получаем информацию о контенте через HEAD запрос
+    try:
+        content_info = await get_content_info(target_url, headers)
+        logger.info(f"Content info: {content_info}")
+    except Exception as e:
+        logger.error(f"Failed to get content info: {e}")
+        # Если не удалось получить информацию через HEAD, пробуем GET с range 0-0
+        content_info = await get_content_info_fallback(target_url, headers)
 
     file_size = content_info['content_length']
+    logger.info(f"File size: {file_size} bytes")
 
-    # Если Range заголовок не передан, устанавливаем диапазон по умолчанию
+    # Парсим Range заголовок
     start_byte, end_byte = parse_range_header(range_header, file_size)
+    logger.info(f"Requested range: {start_byte}-{end_byte}")
 
     # Устанавливаем Range заголовок для исходного сервера
     if range_header:
         headers['Range'] = f'bytes={start_byte}-{end_byte}'
-        logger.info(f"Requesting bytes range: {start_byte}-{end_byte}")
+    elif start_byte > 0 or end_byte < file_size - 1:
+        # Если range_header не передан, но мы парсили диапазон
+        headers['Range'] = f'bytes={start_byte}-{end_byte}'
+
+    logger.info(f"Final headers to source: {headers}")
 
     # Создаем timeout с явными параметрами
     timeout = httpx.Timeout(
@@ -244,7 +222,6 @@ async def stream_video_with_range(
 
     # Добавляем прокси если доступен
     proxy = None
-    
     if CONFIG['use_proxy'] and proxy_manager.working_proxies:
         proxy = proxy_manager.get_random_proxy()
         if proxy:
@@ -256,38 +233,48 @@ async def stream_video_with_range(
         client = None
         try:
             client = httpx.AsyncClient(**client_params)
+
+            # Используем context manager для запроса
             async with client.stream('GET', target_url) as response:
-                # Проверяем статус ответа ДО начала чтения данных
+                logger.info(f"Source response status: {response.status_code}")
+
+                # Проверяем статус ответа
                 if response.status_code == 404:
-                    logger.error(
-                        f"Video not found during streaming (404): {target_url}")
+                    logger.error(f"Video not found (404): {target_url}")
+                    return
+                elif response.status_code == 416:  # Range Not Satisfiable
+                    logger.error(f"Range not satisfiable (416): {target_url}")
                     return
                 elif response.status_code >= 400:
                     logger.error(
-                        f"Error during streaming {response.status_code}: {target_url}")
+                        f"Source server error {response.status_code}: {target_url}")
                     return
 
-                response.raise_for_status()
-
                 # Логируем информацию о ответе
-                logger.info(
-                    f"Video response status: {response.status_code}")
-                logger.info(
-                    f"Video content-type: {response.headers.get('content-type')}")
-                logger.info(
-                    f"Content-Range: {response.headers.get('content-range')}")
+                content_type = response.headers.get('content-type', '')
+                content_range = response.headers.get('content-range', '')
+                content_length = response.headers.get(
+                    'content-length', 'unknown')
 
-                # Читаем и передаем данные чанками
+                logger.info(f"Video content-type: {content_type}")
+                logger.info(f"Content-Range: {content_range}")
+                logger.info(f"Content-Length: {content_length}")
+
+                # Читаем и передаем данные чанками с проверкой отмены
                 async for chunk in response.aiter_bytes(chunk_size=CONFIG['stream_chunk_size']):
                     yield chunk
 
+        except asyncio.CancelledError:
+            logger.info(
+                "Video stream was cancelled by client (seek operation)")
+            # Не логируем как ошибку - это нормально при перемотке
         except httpx.HTTPStatusError as e:
             logger.error(
-                f"HTTP error during video streaming: {e.response.status_code} - {target_url}")
+                f"HTTP error during video streaming: {e.response.status_code}")
         except httpx.TimeoutException:
             logger.error(f"Video stream timeout: {target_url}")
         except httpx.RequestError as e:
-            logger.error(f"Video stream error: {target_url} - {str(e)}")
+            logger.error(f"Video stream request error: {str(e)}")
         except Exception as e:
             logger.error(f"Unexpected video stream error: {str(e)}")
         finally:
@@ -300,39 +287,138 @@ async def stream_video_with_range(
 
     # Подготавливаем заголовки ответа
     response_headers = {
-        'Accept-Ranges': content_info['accept_ranges'],
-        'Cache-Control': 'no-cache',
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': '*',
         'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
         'Content-Type': content_info['content_type'],
     }
 
-    # Если это Range запрос, добавляем соответствующие заголовки
-    if range_header:
+    # Определяем статус код и дополнительные заголовки
+    status_code = 200
+    if range_header or (start_byte > 0) or (end_byte < file_size - 1):
+        status_code = 206  # Partial Content
         content_length = end_byte - start_byte + 1
         response_headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
         response_headers['Content-Length'] = str(content_length)
-
-        logger.info(f"Sending partial content: {content_length} bytes")
-        return StreamingResponse(
-            video_stream_generator(),
-            media_type=content_info['content_type'],
-            headers=response_headers,
-            status_code=206  # Partial Content
-        )
+        logger.info(
+            f"Sending partial content: {content_length} bytes (range: {start_byte}-{end_byte})")
     else:
         # Полный файл
         if file_size > 0:
             response_headers['Content-Length'] = str(file_size)
-
         logger.info(f"Sending full content: {file_size} bytes")
-        return StreamingResponse(
-            video_stream_generator(),
-            media_type=content_info['content_type'],
-            headers=response_headers,
-            status_code=200
-        )
+
+    return StreamingResponse(
+        video_stream_generator(),
+        media_type=content_info['content_type'],
+        headers=response_headers,
+        status_code=status_code
+    )
+
+
+async def get_content_info_fallback(url: str, headers: Dict) -> Dict:
+    """Fallback метод для получения информации о контенте через GET с Range"""
+    timeout = httpx.Timeout(
+        connect=CONFIG['timeout_connect'],
+        read=CONFIG['timeout_read'],
+        write=CONFIG['timeout_write'],
+        pool=CONFIG['timeout_pool']
+    )
+
+    client_params = {
+        # Запрашиваем только первый байт
+        'headers': {**headers, 'Range': 'bytes=0-0'},
+        'timeout': timeout,
+        'follow_redirects': True
+    }
+
+    client = None
+    try:
+        client = httpx.AsyncClient(**client_params)
+        response = await client.get(url)
+
+        content_length = 0
+        content_range = response.headers.get('content-range', '')
+
+        # Парсим Content-Range чтобы получить общий размер
+        if content_range:
+            # Формат: bytes 0-0/1234567
+            match = re.match(r'bytes\s+\d+-\d+/(\d+)', content_range)
+            if match:
+                content_length = int(match.group(1))
+
+        # Если не удалось получить из Content-Range, пробуем Content-Length
+        if content_length == 0 and response.headers.get('content-length'):
+            try:
+                content_length = int(
+                    response.headers.get('content-length', '0'))
+            except ValueError:
+                content_length = 0
+
+        return {
+            'status_code': response.status_code,
+            'content_type': response.headers.get('content-type', 'video/mp4'),
+            'content_length': content_length,
+            'accept_ranges': response.headers.get('accept-ranges', 'bytes'),
+            'headers': dict(response.headers)
+        }
+    except Exception as e:
+        logger.error(f"Fallback content info failed: {e}")
+        return {
+            'status_code': 0,
+            'content_type': 'video/mp4',
+            'content_length': 0,
+            'accept_ranges': 'bytes',
+            'error': str(e)
+        }
+    finally:
+        if client:
+            await client.aclose()
+
+
+def parse_range_header(range_header: Optional[str], file_size: int) -> tuple:
+    """Парсит заголовок Range и возвращает начальный и конечный байты"""
+    if not range_header:
+        return 0, file_size - 1 if file_size > 0 else 0
+
+    try:
+        # Формат: bytes=start-end
+        range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
+        if not range_match:
+            return 0, file_size - 1 if file_size > 0 else 0
+
+        start = int(range_match.group(1))
+        end_str = range_match.group(2)
+
+        if end_str:
+            end = int(end_str)
+        else:
+            end = file_size - 1 if file_size > 0 else 0
+
+        # Валидация диапазона
+        if file_size > 0:
+            if start >= file_size:
+                start = file_size - 1
+            if end >= file_size:
+                end = file_size - 1
+            if start > end:
+                start, end = end, start
+
+        # Ограничиваем максимальный размер диапазона
+        if file_size > 0 and end - start > CONFIG['max_range_size']:
+            end = start + CONFIG['max_range_size'] - 1
+            if end >= file_size:
+                end = file_size - 1
+
+        logger.debug(f"Parsed range: {start}-{end} (file size: {file_size})")
+        return start, end
+
+    except Exception as e:
+        logger.error(f"Error parsing range header '{range_header}': {e}")
+        return 0, file_size - 1 if file_size > 0 else 0
+
 
 # ==================== Core Functions ====================
 
@@ -892,11 +978,15 @@ async def proxy(request: Request, path: str):
     if path in ["", "health"]:
         return JSONResponse(content={'error': 'Use direct endpoints for server info'}, status_code=400)
 
-    # Быстрое извлечение заголовков
+    # Извлекаем заголовки
     request_headers = {}
     for header in ['User-Agent', 'Accept', 'Content-Type', 'Origin', 'Referer', 'Cookie', 'Range']:
         if value := request.headers.get(header):
             request_headers[header] = value
+
+    # Логируем Range заголовок для отладки
+    if 'Range' in request_headers:
+        logger.info(f"Client Range header: {request_headers['Range']}")
 
     # Обработка тела запроса
     post_data = None
@@ -956,6 +1046,10 @@ async def proxy(request: Request, path: str):
             content={'error': e.detail},
             headers={'Access-Control-Allow-Origin': '*'}
         )
+
+    except asyncio.CancelledError:
+        logger.info("Request was cancelled by client")
+        return Response(status_code=499)
 
 
 @app.options("/{path:path}")
