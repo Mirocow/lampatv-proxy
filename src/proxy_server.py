@@ -141,6 +141,7 @@ def parse_range_header(range_header: str, file_size: int) -> tuple:
     return start, end
 
 
+# В функции get_content_info добавить обработку исключений
 async def get_content_info(url: str, headers: Dict) -> Dict:
     """Получает информацию о контенте через HEAD запрос"""
     timeout = httpx.Timeout(
@@ -156,25 +157,31 @@ async def get_content_info(url: str, headers: Dict) -> Dict:
         'follow_redirects': True
     }
 
-    async with httpx.AsyncClient(**client_params) as client:
-        try:
-            response = await client.head(url)
-            return {
-                'status_code': response.status_code,
-                'content_type': response.headers.get('content-type', 'video/mp4'),
-                'content_length': int(response.headers.get('content-length', 0)) if response.headers.get('content-length') and response.headers.get('content-length').isdigit() else 0,
-                'accept_ranges': response.headers.get('accept-ranges', 'bytes'),
-                'headers': dict(response.headers)
-            }
-        except Exception as e:
-            logger.warning(f"Could not get content info: {e}")
-            return {
-                'status_code': 0,
-                'content_type': 'video/mp4',
-                'content_length': 0,
-                'accept_ranges': 'bytes',
-                'error': str(e)
-            }
+    client = None
+    try:
+        client = httpx.AsyncClient(**client_params)
+        response = await client.head(url)
+        return {
+            'status_code': response.status_code,
+            'content_type': response.headers.get('content-type', 'video/mp4'),
+            'content_length': int(response.headers.get('content-length', 0)) if response.headers.get('content-length') and response.headers.get('content-length').isdigit() else 0,
+            'accept_ranges': response.headers.get('accept-ranges', 'bytes'),
+            'headers': dict(response.headers)
+        }
+
+    except Exception as e:
+        logger.warning(f"Could not get content info: {e}")
+        return {
+            'status_code': 0,
+            'content_type': 'video/mp4',
+            'content_length': 0,
+            'accept_ranges': 'bytes',
+            'error': str(e)
+        }
+
+    finally:
+        if client:
+            await client.aclose()
 
 
 async def stream_video_with_range(
@@ -237,6 +244,7 @@ async def stream_video_with_range(
 
     # Добавляем прокси если доступен
     proxy = None
+    
     if CONFIG['use_proxy'] and proxy_manager.working_proxies:
         proxy = proxy_manager.get_random_proxy()
         if proxy:
@@ -245,50 +253,50 @@ async def stream_video_with_range(
 
     async def video_stream_generator():
         """Генератор для потоковой передачи видео данных"""
-        async with httpx.AsyncClient(**client_params) as client:
-            try:
-                async with client.stream('GET', target_url) as response:
-                    # Проверяем статус ответа ДО начала чтения данных
-                    if response.status_code == 404:
-                        logger.error(
-                            f"Video not found during streaming (404): {target_url}")
-                        return
-                    elif response.status_code >= 400:
-                        logger.error(
-                            f"Error during streaming {response.status_code}: {target_url}")
-                        return
+        client = None
+        try:
+            client = httpx.AsyncClient(**client_params)
+            async with client.stream('GET', target_url) as response:
+                # Проверяем статус ответа ДО начала чтения данных
+                if response.status_code == 404:
+                    logger.error(
+                        f"Video not found during streaming (404): {target_url}")
+                    return
+                elif response.status_code >= 400:
+                    logger.error(
+                        f"Error during streaming {response.status_code}: {target_url}")
+                    return
 
-                    response.raise_for_status()
+                response.raise_for_status()
 
-                    # Логируем информацию о ответе
-                    logger.info(
-                        f"Video response status: {response.status_code}")
-                    logger.info(
-                        f"Video content-type: {response.headers.get('content-type')}")
-                    logger.info(
-                        f"Content-Range: {response.headers.get('content-range')}")
+                # Логируем информацию о ответе
+                logger.info(
+                    f"Video response status: {response.status_code}")
+                logger.info(
+                    f"Video content-type: {response.headers.get('content-type')}")
+                logger.info(
+                    f"Content-Range: {response.headers.get('content-range')}")
 
-                    # Читаем и передаем данные чанками
-                    async for chunk in response.aiter_bytes(chunk_size=CONFIG['stream_chunk_size']):
-                        yield chunk
+                # Читаем и передаем данные чанками
+                async for chunk in response.aiter_bytes(chunk_size=CONFIG['stream_chunk_size']):
+                    yield chunk
 
-            except httpx.HTTPStatusError as e:
-                logger.error(
-                    f"HTTP error during video streaming: {e.response.status_code} - {target_url}")
-                # Не выбрасываем исключение, просто завершаем генератор
-                return
-
-            except httpx.TimeoutException:
-                logger.error(f"Video stream timeout: {target_url}")
-                return
-
-            except httpx.RequestError as e:
-                logger.error(f"Video stream error: {target_url} - {str(e)}")
-                return
-
-            except Exception as e:
-                logger.error(f"Unexpected video stream error: {str(e)}")
-                return
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"HTTP error during video streaming: {e.response.status_code} - {target_url}")
+        except httpx.TimeoutException:
+            logger.error(f"Video stream timeout: {target_url}")
+        except httpx.RequestError as e:
+            logger.error(f"Video stream error: {target_url} - {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected video stream error: {str(e)}")
+        finally:
+            # Аккуратно закрываем клиент
+            if client:
+                try:
+                    await client.aclose()
+                except Exception as e:
+                    logger.debug(f"Error closing client: {e}")
 
     # Подготавливаем заголовки ответа
     response_headers = {
