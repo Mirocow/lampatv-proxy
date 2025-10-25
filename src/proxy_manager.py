@@ -84,8 +84,7 @@ class ProxyManager:
 
                 for test_url in test_urls:
                     try:
-                        logger.info(
-                            f"Testing proxy {proxy} with URL: {test_url}")
+                        logger.info(f"Testing proxy {proxy} with URL: {test_url}")
                         response = await client.get(test_url)
 
                         if response.status_code == 200:
@@ -96,12 +95,10 @@ class ProxyManager:
                                 else:
                                     data = response.read()
                                     
-                                logger.info(
-                                    f"✓ Proxy {proxy} is working with {test_url},: {data}")
+                                logger.info(f"✓ Proxy {proxy} is working with {test_url},: {data}")
 
                             except:
-                                logger.info(
-                                    f"✗ Proxy test response text: {response.text[:200]}...")
+                                logger.info(f"✗ Proxy test response text: {response.text[:200]}...")
 
                             return True
 
@@ -109,8 +106,7 @@ class ProxyManager:
                             logger.warning(f"Proxy {proxy} returned status {response.status_code} for {test_url}")
 
                     except Exception as e:
-                        logger.warning(
-                            f"✗ Proxy {proxy} failed for {test_url}: {str(e)}")
+                        logger.warning(f"✗ Proxy {proxy} failed for {test_url}: {str(e)}")
                         continue
 
                 # Если ни один URL не сработал
@@ -120,15 +116,18 @@ class ProxyManager:
         except httpx.ConnectError as e:
             logger.warning(f"✗ Proxy {proxy} connection error: {str(e)}")
             return False
+
         except httpx.TimeoutException:
             logger.warning(f"✗ Proxy {proxy} timeout")
             return False
+
         except Exception as e:
             logger.warning(f"✗ Proxy {proxy} unexpected error: {str(e)}")
             return False
 
     async def validate_proxies(self, proxies: List[str]) -> List[str]:
         """Проверка списка прокси и возврат рабочих"""
+        
         logger.info(f"Validating {len(proxies)} proxies...")
 
         tasks = [self.test_proxy(proxy) for proxy in proxies]
@@ -141,8 +140,7 @@ class ProxyManager:
                 self.proxy_stats[proxies[i]] = {
                     'success': 0, 'failures': 0, 'last_used': None}
 
-        logger.info(
-            f"Found {len(working_proxies)} working proxies out of {len(proxies)}")
+        logger.info(f"Found {len(working_proxies)} working proxies out of {len(proxies)}")
 
         return working_proxies
 
@@ -186,8 +184,7 @@ class ProxyManager:
                 if self.proxy_stats[proxy]['failures'] >= CONFIG['max_proxy_retries']:
                     if proxy in self.working_proxies:
                         self.working_proxies.remove(proxy)
-                        logger.warning(
-                            f"Temporarily removed failing proxy: {proxy}")
+                        logger.warning(f"Temporarily removed failing proxy: {proxy}")
 
     async def add_proxy(self, proxy: str):
         """Добавить прокси в список рабочих"""

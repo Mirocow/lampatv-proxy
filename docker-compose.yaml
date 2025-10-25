@@ -8,17 +8,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - LOG_LEVEL=INFO
       - PYTHONPATH=/app
-      - PROXY_LIST=
-      - STREAM_CHUNK_SIZE=102400
-      - STREAM_TIMEOUT=60.0
-      - TIMEOUT_CONNECT=10.0
-      - TIMEOUT_READ=60.0
-      - TIMEOUT_WRITE=10.0
-      - TIMEOUT_POOL=10.0
-      - MAX_RANGE_SIZE=104857600
-      - MAX_PROXY_RETRIES=3
     env_file:
       - .env
     restart: unless-stopped
@@ -36,17 +26,7 @@ services:
       python -m pytest tests/ -v -p no:cacheprovider -s
     environment:
       - PYTHONPATH=/app
-      - LOG_LEVEL=ERROR
-      - USE_PROXY=false
-      - PROXY_LIST=
-      - STREAM_CHUNK_SIZE=102400
-      - STREAM_TIMEOUT=60.0
-      - TIMEOUT_CONNECT=10.0
-      - TIMEOUT_READ=60.0
-      - TIMEOUT_WRITE=10.0
-      - TIMEOUT_POOL=10.0
-      - MAX_RANGE_SIZE=104857600
-      - MAX_PROXY_RETRIES=3
+      - LOG_LEVEL=WARNING
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro
@@ -61,16 +41,7 @@ services:
       sh -c "python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m uvicorn src.proxy_server:app --host 0.0.0.0 --port 8080"
     environment:
       - PYTHONPATH=/app
-      - LOG_LEVEL=DEBUG
-      - PROXY_LIST=
-      - STREAM_CHUNK_SIZE=102400
-      - STREAM_TIMEOUT=60.0
-      - TIMEOUT_CONNECT=10.0
-      - TIMEOUT_READ=60.0
-      - TIMEOUT_WRITE=10.0
-      - TIMEOUT_POOL=10.0
-      - MAX_RANGE_SIZE=104857600
-      - MAX_PROXY_RETRIES=3
+      - LOG_LEVEL=INFO
     env_file:
       - .env
     ports:
