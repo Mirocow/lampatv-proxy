@@ -34,7 +34,7 @@ logger = logging.getLogger('lampa-proxy')
 app = FastAPI(
     title="Lampa Proxy Server",
     description="Прокси сервер с поддержкой потокового видео, Range запросов и перемотки",
-    version="3.1.0"
+    version="3.2.0"
 )
 
 app.add_middleware(
@@ -74,6 +74,8 @@ CONFIG = {
     'min_buffer_size': 8192,  # Минимальный размер буфера
     'max_retry_attempts': 3,  # Максимальное количество попыток повторного соединения
     'max_request_size': int(os.getenv('MAX_REQUEST_SIZE', '10485760')),
+    # Таймаут для HEAD запросов
+    'head_request_timeout': float(os.getenv('HEAD_REQUEST_TIMEOUT', '15.0')),
 }
 
 
@@ -104,46 +106,93 @@ async def startup_event():
             await proxy_manager.add_proxy(proxy)
         logger.info(f"Loaded {len(working_proxies)} working proxies")
 
-# ==================== Video Streaming with Range Support ====================
+# ==================== Enhanced Video Detection with HEAD Requests ====================
 
 
-def is_video_content(content_type: str, url: str) -> bool:
-    """Проверяет, является ли content-type видео с дополнительными проверками"""
-    if not content_type:
-        # Если content-type не указан, проверяем по URL
-        return is_video_url(url)
+async def is_video_content(url: str, headers: Dict = None) -> Tuple[bool, Dict]:
+    """
+    Проверяет, является ли контент видео используя HEAD запрос для получения точной информации.
+    Возвращает кортеж (is_video: bool, content_info: Dict)
+    """
+    if headers is None:
+        headers = {}
 
-    content_type_lower = content_type.lower()
+    # Сначала проверяем по URL для быстрой фильтрации
+    if not is_video_url(url):
+        return False, {}
 
-    # Проверяем по content-type
-    video_types = [
-        'video/', 'application/x-mpegurl', 'application/vnd.apple.mpegurl',
-        'application/dash+xml', 'application/vnd.ms-sstr+xml'
-    ]
+    try:
+        # Получаем информацию о контенте через HEAD запрос
+        content_info = await get_content_info(url, headers, use_head=True)
 
-    for video_type in video_types:
-        if video_type in content_type_lower:
-            return True
+        content_type = content_info.get('content_type', '').lower()
+        status_code = content_info.get('status_code', 0)
 
-    # Дополнительные проверки для специфических типов
-    if 'octet-stream' in content_type_lower and is_video_url(url):
-        return True
+        # Проверяем статус код
+        if status_code not in [200, 206]:
+            return False, content_info
 
-    return False
+        # Проверяем content-type
+        video_indicators = [
+            'video/', 'application/x-mpegurl', 'application/vnd.apple.mpegurl',
+            'application/dash+xml', 'application/vnd.ms-sstr+xml'
+        ]
+
+        for indicator in video_indicators:
+            if indicator in content_type:
+                logger.info(f"Video detected by content-type: {content_type}")
+                return True, content_info
+
+        # Дополнительные проверки для специфических типов
+        if 'octet-stream' in content_type and is_video_url(url):
+            logger.info(
+                f"Video detected as octet-stream with video URL: {url}")
+            return True, content_info
+
+        # Проверяем по другим заголовкам
+        content_length = content_info.get('content_length', 0)
+        accept_ranges = content_info.get('accept_ranges', '').lower()
+
+        # Большие файлы с поддержкой range запросов могут быть видео
+        if content_length > 1000000 and accept_ranges == 'bytes':
+            logger.info(
+                f"Possible video detected by size and range support: {content_length} bytes")
+            return True, content_info
+
+        return False, content_info
+
+    except Exception as e:
+        logger.warning(f"Error checking video content via HEAD: {e}")
+        # При ошибке возвращаем предположительный результат на основе URL
+        return is_video_url(url), {}
 
 
 def is_video_url(url: str) -> bool:
     """Проверяет, является ли URL видеофайлом по расширению"""
     video_extensions = ['.mp4', '.m4v', '.mkv', '.webm', '.flv', '.avi',
                         '.mov', '.wmv', '.mpeg', '.mpg', '.3gp', '.m3u8', '.ts']
-    return any(url.lower().endswith(ext) for ext in video_extensions)
+    url_lower = url.lower()
+
+    # Проверяем расширения файлов
+    if any(url_lower.endswith(ext) for ext in video_extensions):
+        return True
+
+    # Проверяем паттерны в URL для видео стримов
+    video_patterns = [
+        '/video/', '/stream/', '.m3u8', '.mpd', '/hls/', '/dash/',
+        'index.m3u8', 'manifest.mpd', 'playlist.m3u8'
+    ]
+
+    return any(pattern in url_lower for pattern in video_patterns)
 
 
-async def get_accurate_content_info(url: str, headers: Dict) -> Dict:
-    """Получает точную информацию о контенте, используя несколько методов"""
+async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Dict:
+    """
+    Получает точную информацию о контенте, используя HEAD запрос для определения типа контента.
+    """
     timeout = httpx.Timeout(
         connect=CONFIG['timeout_connect'],
-        read=CONFIG['timeout_read'],
+        read=CONFIG['head_request_timeout'],
         write=CONFIG['timeout_write'],
         pool=CONFIG['timeout_pool']
     )
@@ -158,46 +207,73 @@ async def get_accurate_content_info(url: str, headers: Dict) -> Dict:
     try:
         client = httpx.AsyncClient(**client_params)
 
-        # Сначала пробуем HEAD запрос
-        response = await client.head(url)
-
         content_length = 0
-        content_type = response.headers.get('content-type', 'video/mp4')
-        accept_ranges = response.headers.get('accept-ranges', 'bytes')
+        content_type = 'application/octet-stream'
+        accept_ranges = 'bytes'
+        status_code = 0
+        response_headers = {}
 
-        # Пробуем получить размер из Content-Length
-        if response.headers.get('content-length'):
+        # Сначала пробуем HEAD запрос для быстрого определения типа контента
+        if use_head:
             try:
-                content_length = int(response.headers.get('content-length'))
-                logger.info(f"Got content length from HEAD: {content_length}")
-            except (ValueError, TypeError):
-                content_length = 0
+                response = await client.head(url)
+                status_code = response.status_code
+                response_headers = dict(response.headers)
 
-        # Если через HEAD не получили размер, пробуем GET с Range
-        if content_length == 0:
-            logger.info("Content length not available via HEAD, trying GET with Range...")
+                content_type = response.headers.get('content-type', '')
+                accept_ranges = response.headers.get('accept-ranges', 'bytes')
 
-            # Запрашиваем только первые байты чтобы получить Content-Range
+                # Пробуем получить размер из Content-Length
+                if response.headers.get('content-length'):
+                    try:
+                        content_length = int(
+                            response.headers.get('content-length'))
+                        logger.debug(
+                            f"Got content length from HEAD: {content_length}")
+                    except (ValueError, TypeError):
+                        content_length = 0
+
+            except Exception as e:
+                logger.warning(
+                    f"HEAD request failed, falling back to GET: {e}")
+                use_head = False
+
+        # Если через HEAD не получили нужную информацию, пробуем GET с Range
+        if not use_head or content_length == 0:
+            logger.debug(
+                "Content info not available via HEAD, trying GET with Range...")
+
+            # Запрашиваем только первые байты чтобы получить информацию
             range_headers = headers.copy()
-            range_headers['Range'] = 'bytes=0-0'
+            # Минимальный диапазон для получения заголовков
+            range_headers['Range'] = 'bytes=0-1'
 
             try:
                 range_response = await client.get(url, headers=range_headers)
+                status_code = range_response.status_code
+                response_headers = dict(range_response.headers)
 
+                if not content_type:
+                    content_type = range_response.headers.get(
+                        'content-type', '')
+
+                # Получаем информацию из Content-Range
                 if range_response.status_code == 206 and 'content-range' in range_response.headers:
                     content_range = range_response.headers['content-range']
-                    # Парсим Content-Range: bytes 0-0/1234567
+                    # Парсим Content-Range: bytes 0-1/1234567
                     match = re.match(r'bytes\s+\d+-\d+/(\d+)', content_range)
                     if match:
                         content_length = int(match.group(1))
-                        logger.info(f"Got content length from Content-Range: {content_length}")
+                        logger.debug(
+                            f"Got content length from Content-Range: {content_length}")
 
                 # Если Content-Range не доступен, пробуем Content-Length из GET
                 elif range_response.headers.get('content-length'):
                     try:
                         content_length = int(
                             range_response.headers.get('content-length'))
-                        logger.info(f"Got content length from GET: {content_length}")
+                        logger.debug(
+                            f"Got content length from GET: {content_length}")
                     except (ValueError, TypeError):
                         content_length = 0
 
@@ -205,21 +281,23 @@ async def get_accurate_content_info(url: str, headers: Dict) -> Dict:
                 logger.warning(f"Failed to get content info via GET: {e}")
 
         return {
-            'status_code': response.status_code,
+            'status_code': status_code,
             'content_type': content_type,
             'content_length': content_length,
             'accept_ranges': accept_ranges,
-            'headers': dict(response.headers)
+            'headers': response_headers,
+            'method_used': 'HEAD' if use_head else 'GET'
         }
 
     except Exception as e:
-        logger.error(f"Failed to get accurate content info: {e}")
+        logger.error(f"Failed to get content info: {e}")
         return {
             'status_code': 0,
-            'content_type': 'video/mp4',
+            'content_type': 'application/octet-stream',
             'content_length': 0,
             'accept_ranges': 'bytes',
-            'error': str(e)
+            'error': str(e),
+            'method_used': 'ERROR'
         }
     finally:
         if client:
@@ -249,25 +327,29 @@ async def stream_video_with_range(
         headers.update({k: v for k, v in request_headers.items()
                        if k.lower() not in ['host', 'content-length', 'range', 'accept-encoding']})
 
-    # Получаем точную информацию о контенте
+    # Получаем точную информацию о контенте с использованием HEAD запроса
     try:
-        content_info = await get_accurate_content_info(target_url, headers)
-        logger.info(f"Content info: status={content_info['status_code']}, size={content_info['content_length']}")
-        
+        content_info = await get_content_info(target_url, headers, use_head=True)
+        logger.info(
+            f"Content info: status={content_info['status_code']}, size={content_info['content_length']}, type={content_info['content_type']}")
+
     except Exception as e:
         logger.error(f"Failed to get content info: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to get video info: {str(e)}")
 
     file_size = content_info['content_length']
+    content_type = content_info['content_type']
 
     # Если размер файла неизвестен, логируем предупреждение
     if file_size == 0:
-        logger.warning("File size is unknown, range requests may not work properly")
+        logger.warning(
+            "File size is unknown, range requests may not work properly")
 
     # Парсим Range заголовок
     start_byte, end_byte = parse_range_header(range_header, file_size)
-    logger.info(f"Requested range: {start_byte}-{end_byte} (file size: {file_size})")
+    logger.info(
+        f"Requested range: {start_byte}-{end_byte} (file size: {file_size})")
 
     # Устанавливаем Range заголовок для исходного сервера
     range_requested = False
@@ -316,25 +398,28 @@ async def stream_video_with_range(
                     logger.error(f"Video not found (404): {target_url}")
                     stream_active = False
                     return
-                
+
                 elif response.status_code == 416:  # Range Not Satisfiable
                     logger.error(f"Range not satisfiable (416): {target_url}")
                     stream_active = False
                     return
-                
+
                 elif response.status_code >= 400:
-                    logger.error(f"Source server error {response.status_code}: {target_url}")
+                    logger.error(
+                        f"Source server error {response.status_code}: {target_url}")
                     stream_active = False
                     return
 
                 # Логируем информацию о ответе
-                content_type = response.headers.get('content-type', '')
+                response_content_type = response.headers.get(
+                    'content-type', '')
                 content_range = response.headers.get('content-range', '')
-                content_length = response.headers.get('content-length', 'unknown')
+                response_content_length = response.headers.get(
+                    'content-length', 'unknown')
 
-                logger.info(f"Video content-type: {content_type}")
+                logger.info(f"Video content-type: {response_content_type}")
                 logger.info(f"Content-Range: {content_range}")
-                logger.info(f"Content-Length: {content_length}")
+                logger.info(f"Content-Length: {response_content_length}")
 
                 # Определяем ожидаемое количество байт
                 expected_bytes = 0
@@ -346,11 +431,13 @@ async def stream_video_with_range(
                         range_start = int(match.group(1))
                         range_end = int(match.group(2))
                         expected_bytes = range_end - range_start + 1
-                        logger.info(f"Expected bytes from Content-Range: {expected_bytes}")
-                elif content_length != 'unknown':
+                        logger.info(
+                            f"Expected bytes from Content-Range: {expected_bytes}")
+                elif response_content_length != 'unknown':
                     try:
-                        expected_bytes = int(content_length)
-                        logger.info(f"Expected bytes from Content-Length: {expected_bytes}")
+                        expected_bytes = int(response_content_length)
+                        logger.info(
+                            f"Expected bytes from Content-Length: {expected_bytes}")
                     except ValueError:
                         expected_bytes = 0
 
@@ -364,20 +451,23 @@ async def stream_video_with_range(
 
                     # Проверяем, не достигли ли мы ожидаемого конца
                     if expected_bytes > 0 and bytes_streamed >= expected_bytes:
-                        logger.info(f"Reached expected end of stream: {bytes_streamed}/{expected_bytes} bytes")
+                        logger.info(
+                            f"Reached expected end of stream: {bytes_streamed}/{expected_bytes} bytes")
                         yield chunk
                         break
 
                     yield chunk
 
-                logger.info(f"Video stream completed: {bytes_streamed} bytes streamed")
+                logger.info(
+                    f"Video stream completed: {bytes_streamed} bytes streamed")
 
         except asyncio.CancelledError:
             logger.info("Video stream was cancelled by client")
             stream_active = False
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error during video streaming: {e.response.status_code}")
+            logger.error(
+                f"HTTP error during video streaming: {e.response.status_code}")
             stream_active = False
 
         except httpx.TimeoutException:
@@ -407,7 +497,7 @@ async def stream_video_with_range(
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': '*',
         'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
-        'Content-Type': content_info['content_type'],
+        'Content-Type': content_type,
         'X-Content-Type-Options': 'nosniff',
     }
 
@@ -419,10 +509,12 @@ async def stream_video_with_range(
         if file_size > 0:
             response_headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
             response_headers['Content-Length'] = str(content_length)
-            logger.info(f"Sending 206 Partial Content: {content_length} bytes (range: {start_byte}-{end_byte})")
+            logger.info(
+                f"Sending 206 Partial Content: {content_length} bytes (range: {start_byte}-{end_byte})")
         else:
             # Если размер неизвестен, не указываем Content-Range
-            logger.info("Sending 206 Partial Content without Content-Range (unknown file size)")
+            logger.info(
+                "Sending 206 Partial Content without Content-Range (unknown file size)")
     else:
         status_code = 200  # OK
         if file_size > 0:
@@ -433,7 +525,7 @@ async def stream_video_with_range(
 
     return StreamingResponse(
         video_stream_generator(),
-        media_type=content_info['content_type'],
+        media_type=content_type,
         headers=response_headers,
         status_code=status_code
     )
@@ -685,10 +777,12 @@ async def make_request_with_proxy(target_url, method='GET', data=None, headers=N
         await proxy_manager.mark_proxy_failure(proxy)
 
         if retry_count < CONFIG['max_proxy_retries']:
-            logger.info(f"Retrying request with different proxy (attempt {retry_count + 1})")
+            logger.info(
+                f"Retrying request with different proxy (attempt {retry_count + 1})")
             return await make_request_with_proxy(target_url, method, data, headers, retry_count + 1)
         else:
-            logger.error("All proxy attempts failed, falling back to direct request")
+            logger.error(
+                "All proxy attempts failed, falling back to direct request")
             return await make_direct_request(target_url, method, data, headers)
 
 
@@ -817,7 +911,8 @@ async def make_request(target_url, method='GET', data=None, headers=None, redire
 
 async def handle_encoded_request(segments, method='GET', post_data=None, query_params=None, request_headers=None):
     """Обработка закодированных запросов (enc/enc1/enc2)"""
-    logger.info(f"Processing encoded {method} request with {len(segments)} segments")
+    logger.info(
+        f"Processing encoded {method} request with {len(segments)} segments")
 
     if len(segments) < 2:
         raise ValueError("Invalid encoded request - not enough segments")
@@ -883,10 +978,18 @@ async def handle_encoded_request(segments, method='GET', post_data=None, query_p
 
         target_url = build_url(url_segments_from_encoded, query_params)
 
-    logger.info(f"Proxying {method} with type {handler_type} request to: {target_url}")
+    logger.info(
+        f"Proxying {method} with type {handler_type} request to: {target_url}")
 
-    # Проверяем, является ли запрос видео и нужно ли использовать потоковую передачу
-    if is_video_url(target_url) and method.upper() == 'GET':
+    # Улучшенная проверка видео с использованием HEAD запроса
+    is_video = False
+    content_info = {}
+
+    if method.upper() == 'GET':
+        is_video, content_info = await is_video_content(target_url, request_headers)
+
+    if is_video:
+        logger.info(f"Video content detected, using streaming: {target_url}")
         range_header = request_headers.get(
             'Range') if request_headers else None
         return await stream_video_with_range(target_url, request_headers, range_header), 200, ''
@@ -925,11 +1028,18 @@ async def handle_direct_request(path, method='GET', post_data=None, query_params
 
     target_url = build_url([path], query_params)
 
-    # Проверяем, является ли запрос видео и нужно ли использовать потоковую передачу
-    if is_video_url(target_url) and method.upper() == 'GET':
+    # Улучшенная проверка видео с использованием HEAD запроса
+    is_video = False
+    content_info = {}
+
+    if method.upper() == 'GET':
+        is_video, content_info = await is_video_content(target_url, request_headers)
+
+    if is_video:
+        logger.info(f"Video content detected, using streaming: {target_url}")
         range_header = request_headers.get(
             'Range') if request_headers else None
-        return await stream_video_with_range(target_url, request_headers, range_header)
+        return await stream_video_with_range(target_url, request_headers, range_header), 200, ''
 
     logger.info(f"Proxying {method} request to: {target_url}")
     response = await make_request(target_url, method, post_data, request_headers)
@@ -998,13 +1108,14 @@ async def handle_request(path, method='GET', post_data=None, query_params=None, 
 async def root():
     """Корневой эндпоинт с информацией о сервере"""
     return {
-        "message": "Lampa Proxy Server with Video Streaming and Range Support is running",
+        "message": "Lampa Proxy Server with Enhanced Video Detection and Range Support is running",
         "status": "active",
-        "version": "3.1.1",
+        "version": "3.2.0",
         "timestamp": datetime.now().isoformat(),
         "supported_handlers": ["enc", "enc1", "enc2", "enc3"],
         "video_streaming": True,
         "range_support": True,
+        "enhanced_video_detection": True,
         "proxy_enabled": CONFIG['use_proxy'],
         "total_proxies": len(CONFIG['proxy_list']),
         "working_proxies": len(proxy_manager.working_proxies),
@@ -1018,8 +1129,8 @@ async def root():
             "stream_chunk_size": CONFIG['stream_chunk_size'],
             "stream_timeout": CONFIG['stream_timeout'],
             "max_range_size": CONFIG['max_range_size'],
-            "max_connections": CONFIG['max_connections'],
             "stream_chunk_size": CONFIG['stream_chunk_size'],
+            "head_request_timeout": CONFIG['head_request_timeout'],
             "timeouts": {
                 "connect": CONFIG['timeout_connect'],
                 "read": CONFIG['timeout_read'],
@@ -1035,7 +1146,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "service": "lampa-proxy-optimized",
+        "service": "lampa-proxy-enhanced",
     }
 
 
@@ -1060,7 +1171,7 @@ async def proxy(request: Request, path: str):
     if path in ["", "health", "status"]:
         return JSONResponse(
             content={
-                'error': 'Используйте прямые эндпоинты для информации о сервере'},
+                'error': 'Use direct endpoints for server information'},
             status_code=400
         )
 
@@ -1082,7 +1193,7 @@ async def proxy(request: Request, path: str):
             try:
                 if int(content_length) > CONFIG['max_request_size']:
                     return JSONResponse(
-                        content={'error': 'Слишком большой размер запроса'},
+                        content={'error': 'Request size too large'},
                         status_code=413
                     )
                 post_data = await request.body()
