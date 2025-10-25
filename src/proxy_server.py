@@ -34,7 +34,7 @@ logger = logging.getLogger('lampa-proxy')
 app = FastAPI(
     title="Lampa Proxy Server",
     description="Прокси сервер с поддержкой потокового видео, Range запросов и перемотки",
-    version="3.2.0"
+    version="3.2.1"
 )
 
 app.add_middleware(
@@ -69,12 +69,11 @@ CONFIG = {
     'timeout_read': float(os.getenv('TIMEOUT_READ', '60.0')),
     'timeout_write': float(os.getenv('TIMEOUT_WRITE', '10.0')),
     'timeout_pool': float(os.getenv('TIMEOUT_POOL', '10.0')),
-    'max_range_size': int(os.getenv('MAX_RANGE_SIZE', '104857600')), # 5 минут для видео стримов
+    'max_range_size': int(os.getenv('MAX_RANGE_SIZE', '104857600')),
     'max_request_size': int(os.getenv('MAX_REQUEST_SIZE', '10485760')),
     # Таймаут для HEAD запросов
     'head_request_timeout': float(os.getenv('HEAD_REQUEST_TIMEOUT', '15.0')),
 }
-
 
 # Инициализация менеджера прокси
 proxy_manager = ProxyManager()
@@ -187,11 +186,15 @@ async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Di
     """
     Получает точную информацию о контенте, используя HEAD запрос для определения типа контента.
     """
+    # Для видеофайлов увеличиваем таймауты
+    is_video_url_check = is_video_url(url)
+    timeout_multiplier = 2.0 if is_video_url_check else 1.0
+
     timeout = httpx.Timeout(
-        connect=CONFIG['timeout_connect'],
-        read=CONFIG['head_request_timeout'],
-        write=CONFIG['timeout_write'],
-        pool=CONFIG['timeout_pool']
+        connect=CONFIG['timeout_connect'] * timeout_multiplier,
+        read=CONFIG['head_request_timeout'] * timeout_multiplier,
+        write=CONFIG['timeout_write'] * timeout_multiplier,
+        pool=CONFIG['timeout_pool'] * timeout_multiplier
     )
 
     client_params = {
@@ -301,6 +304,18 @@ async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Di
             await client.aclose()
 
 
+async def is_stream_complete(response: httpx.Response, bytes_streamed: int, expected_bytes: int) -> bool:
+    """Определяет, завершен ли видео-поток"""
+    if expected_bytes > 0 and bytes_streamed >= expected_bytes:
+        return True
+
+    # Для неизвестного размера полагаемся на завершение соединения
+    if response.status_code == 200 and expected_bytes == 0:
+        return False  # Пусть клиент определяет конец
+
+    return False
+
+
 async def stream_video_with_range(
     target_url: str,
     request_headers: Dict,
@@ -351,7 +366,11 @@ async def stream_video_with_range(
     # Устанавливаем Range заголовок для исходного сервера
     range_requested = False
     if range_header or start_byte > 0 or (file_size > 0 and end_byte < file_size - 1):
-        headers['Range'] = f'bytes={start_byte}-{end_byte}'
+        if file_size > 0:
+            headers['Range'] = f'bytes={start_byte}-{end_byte}'
+        else:
+            # Для неизвестного размера запрашиваем с начальной позиции
+            headers['Range'] = f'bytes={start_byte}-'
         range_requested = True
         logger.info(f"Sending Range to source: {headers['Range']}")
 
@@ -501,15 +520,16 @@ async def stream_video_with_range(
     # Определяем статус код и дополнительные заголовки
     if range_requested:
         status_code = 206  # Partial Content
-        content_length = end_byte - start_byte + 1 if file_size > 0 else 0
 
         if file_size > 0:
+            content_length = end_byte - start_byte + 1
             response_headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
             response_headers['Content-Length'] = str(content_length)
             logger.info(
                 f"Sending 206 Partial Content: {content_length} bytes (range: {start_byte}-{end_byte})")
         else:
-            # Если размер неизвестен, не указываем Content-Range
+            # Если размер неизвестен, не указываем Content-Length и Content-Range
+            # Это позволяет плееру корректно определять конец видео
             logger.info(
                 "Sending 206 Partial Content without Content-Range (unknown file size)")
     else:
@@ -573,7 +593,6 @@ def parse_range_header(range_header: Optional[str], file_size: int) -> Tuple[int
     except Exception as e:
         logger.error(f"Error parsing range header '{range_header}': {e}")
         return 0, file_size - 1 if file_size > 0 else 0
-
 
 # ==================== Core Functions ====================
 
@@ -715,7 +734,7 @@ async def handle_redirect(response, original_headers, method, data, redirect_cou
 
 
 def is_valid_json(text):
-    """Проверка валидности JSON включая примитивы"""
+    """Проверка валидности JSON"""
     if not text:
         return False
 
@@ -723,22 +742,12 @@ def is_valid_json(text):
     if not text:
         return False
 
-    # Явно проверяем JSON примитивы
-    if text in ['null', 'true', 'false']:
-        return True
-
-    # Проверяем числа
-    if text.isdigit() or (text.startswith('-') and text[1:].isdigit()):
-        return True
-
-    # Стандартная проверка JSON
     if (text.startswith('{') and text.endswith('}')) or (text.startswith('[') and text.endswith(']')):
         try:
             json.loads(text)
             return True
         except (json.JSONDecodeError, ValueError):
             return False
-
     return False
 
 
@@ -1117,7 +1126,7 @@ async def root():
     return {
         "message": "Lampa Proxy Server with Enhanced Video Detection and Range Support is running",
         "status": "active",
-        "version": "3.2.0",
+        "version": "3.2.1",
         "timestamp": datetime.now().isoformat(),
         "supported_handlers": ["enc", "enc1", "enc2", "enc3"],
         "video_streaming": True,
