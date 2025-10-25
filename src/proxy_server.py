@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import Response, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from .proxy_manager import ProxyManager
+from src.proxy_manager import ProxyManager
 
 # ==================== Configuration ====================
 
@@ -69,10 +69,7 @@ CONFIG = {
     'timeout_read': float(os.getenv('TIMEOUT_READ', '60.0')),
     'timeout_write': float(os.getenv('TIMEOUT_WRITE', '10.0')),
     'timeout_pool': float(os.getenv('TIMEOUT_POOL', '10.0')),
-    'max_range_size': int(os.getenv('MAX_RANGE_SIZE', '104857600')),
-    'video_streaming_timeout': 300.0,  # 5 минут для видео стримов
-    'min_buffer_size': 8192,  # Минимальный размер буфера
-    'max_retry_attempts': 3,  # Максимальное количество попыток повторного соединения
+    'max_range_size': int(os.getenv('MAX_RANGE_SIZE', '104857600')), # 5 минут для видео стримов
     'max_request_size': int(os.getenv('MAX_REQUEST_SIZE', '10485760')),
     # Таймаут для HEAD запросов
     'head_request_timeout': float(os.getenv('HEAD_REQUEST_TIMEOUT', '15.0')),
@@ -718,7 +715,7 @@ async def handle_redirect(response, original_headers, method, data, redirect_cou
 
 
 def is_valid_json(text):
-    """Проверка валидности JSON"""
+    """Проверка валидности JSON включая примитивы"""
     if not text:
         return False
 
@@ -726,12 +723,22 @@ def is_valid_json(text):
     if not text:
         return False
 
+    # Явно проверяем JSON примитивы
+    if text in ['null', 'true', 'false']:
+        return True
+
+    # Проверяем числа
+    if text.isdigit() or (text.startswith('-') and text[1:].isdigit()):
+        return True
+
+    # Стандартная проверка JSON
     if (text.startswith('{') and text.endswith('}')) or (text.startswith('[') and text.endswith(']')):
         try:
             json.loads(text)
             return True
         except (json.JSONDecodeError, ValueError):
             return False
+
     return False
 
 
@@ -910,7 +917,7 @@ async def make_request(target_url, method='GET', data=None, headers=None, redire
 
 
 async def handle_encoded_request(segments, method='GET', post_data=None, query_params=None, request_headers=None):
-    """Обработка закодированных запросов (enc/enc1/enc2)"""
+    """Обработка закодированных запросов (enc/enc1/enc2/enc3)"""
     logger.info(
         f"Processing encoded {method} request with {len(segments)} segments")
 
@@ -979,7 +986,7 @@ async def handle_encoded_request(segments, method='GET', post_data=None, query_p
         target_url = build_url(url_segments_from_encoded, query_params)
 
     logger.info(
-        f"Proxying {method} with type {handler_type} request to: {target_url}")
+        f"Proxying {method} with encode type {handler_type} request to: {target_url}")
 
     # Улучшенная проверка видео с использованием HEAD запроса
     is_video = False

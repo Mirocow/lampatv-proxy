@@ -23,13 +23,28 @@ services:
       context: .
       dockerfile: Dockerfile.test
     command: >
-      python -m pytest tests/ -v -p no:cacheprovider -s
+      sh -c "python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=html --asyncio-mode=auto -W ignore::DeprecationWarning"
     environment:
-      - PYTHONPATH=/app
-      - LOG_LEVEL=WARNING
+      - PYTHONPATH=/app/src
+      - LOG_LEVEL=ERROR
+      - USE_PROXY=false
+      - PROXY_TEST_URL=http://httpbin.org/ip
+      - PROXY_TEST_TIMEOUT=5
+      - MAX_PROXY_RETRIES=2
+      - MAX_REDIRECTS=3
+      - STREAM_CHUNK_SIZE=8192
+      - STREAM_TIMEOUT=30
+      - TIMEOUT_CONNECT=5
+      - TIMEOUT_READ=10
+      - TIMEOUT_WRITE=5
+      - TIMEOUT_POOL=5
+      - MAX_RANGE_SIZE=10485760
+      - MAX_REQUEST_SIZE=1048576
+      - HEAD_REQUEST_TIMEOUT=10
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro
+      - ./htmlcov:/app/htmlcov
     stdin_open: true
     tty: true
 

@@ -1,8 +1,11 @@
-fastapi==0.104.1
+fastapi==0.115.6
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 httpx[socks]==0.28.1
 httpx-socks[asyncio]==v0.10.1
 python-socks[asyncio]==v2.7.2
-python-multipart==0.0.6
 socksio==1.0.0
+anyio>=3.0.0
+
+
+

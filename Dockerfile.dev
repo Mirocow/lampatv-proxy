@@ -6,14 +6,15 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements.dev.txt ./
+# Копируем requirements для тестов
+COPY requirements.txt .
+COPY requirements.dev.txt .
 
+# Устанавливаем Python зависимости
+RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir -r requirements.dev.txt
 
 COPY src/ ./src/
-
-# Если используете debug_runner.py, добавьте:
-# COPY debug_runner.py ./
 
 RUN groupadd -r lampa && useradd -r -g lampa lampa
 RUN chown -R lampa:lampa /app
