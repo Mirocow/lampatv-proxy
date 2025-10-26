@@ -146,6 +146,24 @@ class TestRequestHandlers:
 
             assert status == 200
             mock_handler.assert_called_once()
+            
+    @pytest.mark.asyncio
+    async def test_handle_encoded_request_invalid_data(self):
+        """Тест обработки невалидных закодированных данных"""
+        segments = ["enc", "invalid-base64-data"]
+
+        with pytest.raises(ValueError):
+            await handle_encoded_request(segments, 'GET', None, {}, {})
+
+    @pytest.mark.asyncio
+    async def test_handle_encoded_request_enc_missing_url(self):
+        """Тест обработки enc запроса без URL"""
+        test_data = "param/User-Agent=TestAgent"
+        encoded = base64.b64encode(test_data.encode()).decode().rstrip('=')
+        segments = ["enc", encoded]  # Нет дополнительных сегментов с URL
+
+        with pytest.raises(ValueError):
+            await handle_encoded_request(segments, 'GET', None, {}, {})
 
     @pytest.mark.asyncio
     async def test_handle_request_direct(self):

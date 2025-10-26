@@ -10,10 +10,12 @@ RUN apt-get update && apt-get install -y \
 # Копируем requirements для тестов
 COPY requirements.txt .
 COPY requirements.test.txt .
+#COPY requirements.dev.txt .
 
 # Устанавливаем Python зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir -r requirements.test.txt
+#RUN pip install --no-cache-dir -r requirements.dev.txt
 
 # Копируем исходный код и тесты
 COPY src/ ./src/
@@ -22,5 +24,10 @@ COPY tests/ ./tests/
 # Устанавливаем PYTHONPATH
 ENV PYTHONPATH=/app/src
 
+RUN groupadd -r lampa && useradd -r -g lampa lampa
+RUN chown -R lampa:lampa /app
+
+USER lampa
+
 # Команда для запуска тестов
-CMD ["python", "-m", "pytest", "tests/", "-v", "--tb=short", "--cov=src", "--cov-report=term-missing", "--asyncio-mode=auto", "-W", "ignore::DeprecationWarning"]
+#CMD ["python", "-m", "pytest", "tests/", "-v", "--tb=short", "--cov=src", "--cov-report=term-missing", "--asyncio-mode=auto", "-W", "ignore::DeprecationWarning"]

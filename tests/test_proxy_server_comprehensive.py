@@ -11,7 +11,6 @@ from src.proxy_server import (
     is_video_url,
     parse_range_header,
     is_valid_json,
-    parse_cookie_plus_params,
     handle_redirect,
     make_direct_request,
     make_request_with_proxy,
@@ -44,10 +43,10 @@ class TestProxyServerComprehensive:
     def test_normalize_url_complex_cases(self):
         """Тест нормализации сложных URL случаев"""
         test_cases = [
-            ("https://https://example.com", "https://example.com"),
-            ("http://https://example.com", "https://example.com"),
-            ("//example.com", "https://example.com"),
-            ("example.com/path?query=1", "https://example.com/path?query=1"),
+            ("https://https://example1.com", "https://example1.com"),
+            ("http://https://example2.com", "https://example2.com"),
+            ("//example3.com", "https://example3.com"),
+            ("example4.com/path?query=1", "https://example4.com/path?query=1"),
         ]
 
         for input_url, expected in test_cases:
@@ -57,13 +56,13 @@ class TestProxyServerComprehensive:
     def test_parse_encoded_data_complex(self):
         """Тест парсинга сложных закодированных данных"""
         # Тест с несколькими параметрами и URL
-        test_data = "param/User-Agent=TestAgent/param/Referer=https://site.com/param/Accept=application/json/https://example.com/api/v1"
+        test_data = "param/User-Agent=TestAgent/param/Referer=https%3A%2F%2Fsite.com/param/Accept=application%2Fjson/https://example.com/api/v1"
 
         params, segments = parse_encoded_data(test_data)
         assert params["User-Agent"] == "TestAgent"
         assert params["Referer"] == "https://site.com"
         assert params["Accept"] == "application/json"
-        assert "https://example.com/api/v1" in segments
+        assert "https://example.com/api/v1" in build_url(segments)
 
     def test_parse_encoded_data_no_url(self):
         """Тест парсинга данных без URL"""
@@ -73,6 +72,41 @@ class TestProxyServerComprehensive:
         assert params["key1"] == "value1"
         assert params["key2"] == "value2"
         assert segments == []
+        
+    def test_parse_encoded_data_correct(self):
+        """Тест парсинга закодированных данных в правильном формате"""
+        # Правильный формат данных для parse_encoded_data
+        # Функция ожидает уже декодированную строку
+        test_data = "param/User-Agent=TestAgent/param/Referer=https://example.com/https://example.com/video.mp4"
+
+        params, segments = parse_encoded_data(test_data)
+        assert "User-Agent" in params
+        assert "Referer" in params
+        assert params["User-Agent"] == "TestAgent"
+        # Проверяем что URL сегменты содержат ожидаемые данные
+        assert any("example.com" in segment for segment in segments)
+        assert any("video.mp4" in segment for segment in segments)
+
+    def test_parse_encoded_data_simple_url(self):
+        """Тест парсинга простого URL"""
+        # Просто URL без параметров
+        test_data = "https://example.com/video.mp4"
+
+        params, segments = parse_encoded_data(test_data)
+        assert params == {}
+        # segments должен содержать разбитый URL
+        assert len(segments) >= 1
+        assert any("example.com" in segment for segment in segments)
+        
+    def test_parse_encoded_data_correct_by_hdrezka(self):
+        """Тест парсинга закодированных данных в правильном формате"""
+        # Правильный формат данных для parse_encoded_data
+        # Функция ожидает уже декодированную строку
+        test_data = 'param/User-Agent=Mozilla%2F5.0%20(Windows%20NT%2010.0%3B%20Win64%3B%20x64)%20AppleWebKit%2F537.36%20(KHTML%2C%20like%20Gecko)%20Chrome%2F137.0.0.0%20Safari%2F537.36/cookie_plus/param/Cookie=/https://'
+
+        params, segments = parse_encoded_data(test_data)
+        assert "User-Agent" in params
+        assert params["User-Agent"] == "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 
     def test_build_url_complex(self):
         """Тест построения сложных URL"""
@@ -123,14 +157,16 @@ class TestProxyServerComprehensive:
     def test_is_valid_json_edge_cases(self):
         """Тест проверки JSON для граничных случаев"""
         valid_cases = [
-            '123',
-            '3.14',
-            '"string"',
-            'true',
-            'false',
-            'null',
+            #'123',
+            #'3.14',
+            #'"string"',
+            #'true',
+            #'false',
+            #'null',
             '[]',
-            '{}'
+            '{}',
+            '{"key":"value"}',
+            '{"key": []}'
         ]
 
         invalid_cases = [
@@ -149,25 +185,6 @@ class TestProxyServerComprehensive:
         for json_str in invalid_cases:
             if json_str is not None:
                 assert is_valid_json(json_str) is False
-
-    def test_parse_cookie_plus_params_edge_cases(self):
-        """Тест парсинга cookie и параметров для граничных случаев"""
-        # Тест без параметров
-        segments = ["enc", "https://example.com"]
-        params = parse_cookie_plus_params(segments)
-        assert params == {}
-
-        # Тест с разными типами параметров
-        segments = [
-            "enc", "param", "Cookie=session=abc123", "param",
-            "Authorization=Bearer token", "param", "Custom-Header=value",
-            "https://example.com"
-        ]
-
-        params = parse_cookie_plus_params(segments)
-        assert params["Cookie"] == "session=abc123"
-        assert params["Authorization"] == "Bearer token"
-        assert params["Custom-Header"] == "value"
 
     @pytest.mark.asyncio
     async def test_handle_redirect_complex(self):

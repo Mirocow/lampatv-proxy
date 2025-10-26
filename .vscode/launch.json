@@ -18,6 +18,29 @@
             "justMyCode": false
         },
         {
+            "name": "Attach to Docker pytest",
+            "type": "python",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}/src",
+                    "remoteRoot": "/app/src"
+                },
+                {
+                    "localRoot": "${workspaceFolder}/tests",
+                    "remoteRoot": "/app/tests"
+                }
+            ],
+            "justMyCode": false,
+            "env": {
+                "PYDEVD_DISABLE_FILE_VALIDATION": "1"
+            }
+        },
+        {
             "name": "Python: Run Tests in Docker",
             "type": "python",
             "request": "launch",

@@ -60,3 +60,9 @@ make dev        # Аналогично debug
 make tests      # Аналогично test
 make stop       # Аналогично down
 ```
+
+### Отладка
+
+```
+-m debugpy --listen 0.0.0.0:5679 --wait-for-client
+```

@@ -169,14 +169,16 @@ def is_video_url(url: str) -> bool:
                         '.mov', '.wmv', '.mpeg', '.mpg', '.3gp', '.m3u8', '.ts']
     url_lower = url.lower()
 
+    url_parts = urllib.parse.urlparse(url_lower)
+
     # Проверяем расширения файлов
-    if any(url_lower.endswith(ext) for ext in video_extensions):
+    if url_parts.path and any(url_parts.path.endswith(ext) for ext in video_extensions):
         return True
 
     # Проверяем паттерны в URL для видео стримов
     video_patterns = [
         '/video/', '/stream/', '.m3u8', '.mpd', '/hls/', '/dash/',
-        'index.m3u8', 'manifest.mpd', 'playlist.m3u8'
+        'index.m3u8', 'manifest.mpd', 'playlist.m3u8', 'hls.m3u8'
     ]
 
     return any(pattern in url_lower for pattern in video_patterns)
@@ -184,7 +186,8 @@ def is_video_url(url: str) -> bool:
 
 async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Dict:
     """
-    Получает точную информацию о контенте, используя HEAD запрос для определения типа контента.
+    Получает точную информацию о контенте, гарантированно определяя длину файла.
+    Использует комбинацию HEAD и GET запросов с различными стратегиями.
     """
     # Для видеофайлов увеличиваем таймауты
     is_video_url_check = is_video_url(url)
@@ -203,6 +206,13 @@ async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Di
         'follow_redirects': True
     }
 
+    # Добавляем прокси если доступен
+    if CONFIG['use_proxy'] and proxy_manager.working_proxies:
+        proxy = proxy_manager.get_random_proxy()
+        if proxy:
+            client_params['proxy'] = proxy
+            logger.info(f"Using proxy for streaming: {proxy}")
+
     client = None
     try:
         client = httpx.AsyncClient(**client_params)
@@ -212,14 +222,16 @@ async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Di
         accept_ranges = 'bytes'
         status_code = 0
         response_headers = {}
+        method_used = 'ERROR'
 
-        # Сначала пробуем HEAD запрос для быстрого определения типа контента
+        # Сначала пробуем HEAD запрос для быстрого определения
         if use_head:
             try:
+                logger.debug(f"Trying HEAD request for: {url}")
                 response = await client.head(url)
                 status_code = response.status_code
                 response_headers = dict(response.headers)
-
+                method_used = 'HEAD'
                 content_type = response.headers.get('content-type', '')
                 accept_ranges = response.headers.get('accept-ranges', 'bytes')
 
@@ -230,55 +242,118 @@ async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Di
                             response.headers.get('content-length'))
                         logger.debug(
                             f"Got content length from HEAD: {content_length}")
-                    except (ValueError, TypeError):
+
+                        return {
+                            'status_code': status_code,
+                            'content_type': content_type,
+                            'content_length': content_length,
+                            'accept_ranges': accept_ranges,
+                            'headers': response_headers,
+                            'method_used': method_used
+                        }
+
+                    except (ValueError, TypeError) as e:
+                        logger.warning(
+                            f"Invalid Content-Length from HEAD: {e}")
                         content_length = 0
 
             except Exception as e:
-                logger.warning(
-                    f"HEAD request failed, falling back to GET: {e}")
-                use_head = False
+                logger.warning(f"HEAD request failed: {e}")
 
-        # Если через HEAD не получили нужную информацию, пробуем GET с Range
-        if not use_head or content_length == 0:
-            logger.debug(
-                "Content info not available via HEAD, trying GET with Range...")
+        # Если HEAD не сработал или не дал длину, пробуем GET с Range
+        strategies = [
+            # Стратегия 1: Range запрос для получения Content-Range
+            {'Range': 'bytes=0-0', 'description': 'Range 0-0'},
 
-            # Запрашиваем только первые байты чтобы получить информацию
-            range_headers = headers.copy()
-            # Минимальный диапазон для получения заголовков
-            range_headers['Range'] = 'bytes=0-1'
+            # Стратегия 2: Range запрос для больших диапазонов (если сервер требует)
+            {'Range': 'bytes=0-999', 'description': 'Range 0-999'},
 
+            # Стратегия 3: Без Range (последняя попытка)
+            {},  # Пустые headers для обычного GET
+        ]
+
+        for strategy in strategies:
             try:
-                range_response = await client.get(url, headers=range_headers)
-                status_code = range_response.status_code
-                response_headers = dict(range_response.headers)
+                strategy_headers = headers.copy()
+                strategy_headers.update(strategy)
 
-                if not content_type:
-                    content_type = range_response.headers.get(
-                        'content-type', '')
+                logger.debug(
+                    f"Trying GET with strategy: {strategy.get('description', 'Simple GET')}")
 
-                # Получаем информацию из Content-Range
-                if range_response.status_code == 206 and 'content-range' in range_response.headers:
-                    content_range = range_response.headers['content-range']
-                    # Парсим Content-Range: bytes 0-1/1234567
-                    match = re.match(r'bytes\s+\d+-\d+/(\d+)', content_range)
-                    if match:
-                        content_length = int(match.group(1))
-                        logger.debug(
-                            f"Got content length from Content-Range: {content_length}")
+                async with client.stream('GET', url, headers=strategy_headers) as response:
+                    status_code = response.status_code
+                    response_headers = dict(response.headers)
+                    method_used = f"GET_{strategy.get('description', 'SIMPLE')}"
 
-                # Если Content-Range не доступен, пробуем Content-Length из GET
-                elif range_response.headers.get('content-length'):
+                    # Обновляем информацию из заголовков
+                    if not content_type:
+                        content_type = response.headers.get('content-type', '')
+
+                    accept_ranges = response.headers.get(
+                        'accept-ranges', accept_ranges)
+
+                    # Приоритет 1: Content-Range (самый надежный для определения полной длины)
+                    if response.status_code == 206 and 'content-range' in response.headers:
+                        content_range = response.headers['content-range']
+
+                        # Парсим форматы: "bytes 0-100/123456" или "bytes */123456"
+                        match = re.match(
+                            r'bytes\s+\*?/?(\d+)-?(\d+)?/(\d+)', content_range)
+
+                        if match:
+                            total_size = match.group(3)
+                            content_length = int(total_size)
+                            logger.debug(
+                                f"Got content length from Content-Range: {content_length}")
+                            break
+
+                    # Приоритет 2: Content-Length из частичного контента
+                    elif response.status_code == 206 and response.headers.get('content-length'):
+                        # Для частичного контента Content-Length показывает размер части,
+                        # но мы можем использовать его если других вариантов нет
+                        try:
+                            partial_length = int(
+                                response.headers.get('content-length'))
+                            logger.debug(
+                                f"Got partial content length: {partial_length}")
+
+                            # Если это маленький кусок, продолжаем поиск полной длины
+                            if partial_length < 1000:
+                                continue
+
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Приоритет 3: Content-Length из полного ответа
+                    elif response.status_code == 200 and response.headers.get('content-length'):
+                        try:
+                            content_length = int(
+                                response.headers.get('content-length'))
+                            logger.debug(
+                                f"Got content length from full GET: {content_length}")
+                            break
+
+                        except (ValueError, TypeError) as e:
+                            logger.warning(
+                                f"Invalid Content-Length from GET: {e}")
+
+                    # Читаем немного данных чтобы убедиться в работе соединения
                     try:
-                        content_length = int(
-                            range_response.headers.get('content-length'))
-                        logger.debug(
-                            f"Got content length from GET: {content_length}")
-                    except (ValueError, TypeError):
-                        content_length = 0
+                        chunk = await response.read(1024)  # Читаем 1KB
+                        if chunk and response.status_code == 200 and not content_length:
+                            logger.debug(
+                                "Got data chunk but no content length available")
+
+                    except Exception as e:
+                        logger.debug(f"Error reading chunk: {e}")
 
             except Exception as e:
-                logger.warning(f"Failed to get content info via GET: {e}")
+                logger.warning(f"GET strategy failed: {e}")
+                continue
+
+        # Если все стратегии не дали результат, логируем проблему
+        if content_length == 0:
+            logger.warning(f"Could not determine content length for: {url}")
 
         return {
             'status_code': status_code,
@@ -286,7 +361,7 @@ async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Di
             'content_length': content_length,
             'accept_ranges': accept_ranges,
             'headers': response_headers,
-            'method_used': 'HEAD' if use_head else 'GET'
+            'method_used': method_used
         }
 
     except Exception as e:
@@ -299,6 +374,7 @@ async def get_content_info(url: str, headers: Dict, use_head: bool = True) -> Di
             'error': str(e),
             'method_used': 'ERROR'
         }
+
     finally:
         if client:
             await client.aclose()
@@ -390,7 +466,6 @@ async def stream_video_with_range(
     }
 
     # Добавляем прокси если доступен
-    proxy = None
     if CONFIG['use_proxy'] and proxy_manager.working_proxies:
         proxy = proxy_manager.get_random_proxy()
         if proxy:
@@ -449,11 +524,13 @@ async def stream_video_with_range(
                         expected_bytes = range_end - range_start + 1
                         logger.info(
                             f"Expected bytes from Content-Range: {expected_bytes}")
+
                 elif response_content_length != 'unknown':
                     try:
                         expected_bytes = int(response_content_length)
                         logger.info(
                             f"Expected bytes from Content-Length: {expected_bytes}")
+
                     except ValueError:
                         expected_bytes = 0
 
@@ -503,6 +580,7 @@ async def stream_video_with_range(
             if client:
                 try:
                     await client.aclose()
+
                 except Exception as e:
                     logger.debug(f"Error closing client: {e}")
 
@@ -532,6 +610,7 @@ async def stream_video_with_range(
             # Это позволяет плееру корректно определять конец видео
             logger.info(
                 "Sending 206 Partial Content without Content-Range (unknown file size)")
+
     else:
         status_code = 200  # OK
         if file_size > 0:
@@ -611,8 +690,9 @@ def decode_base64_url(encoded_str: str) -> str:
         return result
 
     except Exception as e:
-        logger.error(f"Base64 decoding error: {encoded_str}, error: {str(e)}")
-        raise ValueError(f"Base64 decoding error: {str(e)}")
+        raise e
+        # logger.error(f"Base64 decoding error: {encoded_str}, error: {str(e)}")
+        # raise ValueError(f"Base64 decoding error: {str(e)}")
 
 
 def normalize_url(url: str) -> str:
@@ -632,6 +712,11 @@ def normalize_url(url: str) -> str:
                 logger.debug(f"Removed duplicate protocol: {url}")
                 break
 
+    # Обрабатываем protocol-relative URLs (начинающиеся с //)
+    if url.startswith('//'):
+        url = 'https:' + url
+        logger.debug(f"Fixed protocol-relative URL: {url}")
+
     # Исправляем неправильные слеши
     url = re.sub(r'(https?:/)([^/])', r'\1/\2', url)
 
@@ -643,29 +728,37 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def parse_encoded_data(encoded_data):
-    """Парсинг закодированных данных в формате btoa"""
+def parse_encoded_data(encoded_str):# -> tuple[dict, list]:
+    """Парсинг закодированных данных в формате prox_enc"""
     params = {}
+    url = []
 
-    # Разбиваем данные на сегменты
-    segments = [s for s in encoded_data.strip('/').split('/') if s]
-
+    if not encoded_str:
+        return params, url
+    
+    # Разделяем строку по символу '/'
+    parts = encoded_str.split('/')
+    
     i = 0
-    while i < len(segments):
-        if segments[i] == 'param' and i + 1 < len(segments):
-            key_val = segments[i + 1].split('=', 1)
-            if len(key_val) == 2:
-                key = urllib.parse.unquote(key_val[0])
-                value = urllib.parse.unquote(key_val[1])
-                params[key] = value
-                logger.debug(f"Parsed parameter: {key} = {value[:50]}...")
-            i += 2
-        else:
-            # Нашли начало URL, возвращаем параметры и оставшиеся сегменты
-            url_segments = segments[i:]
-            return params, url_segments
+    n= 0
 
-    return params, []
+    # Обрабатываем части последовательно
+    while i < len(parts):
+        # Если находим "param", то следующий элемент должен быть в формате "ключ=значение"
+        if parts[i] == 'param' and i + 1 < len(parts):
+            key_value = parts[i + 1]
+            if '=' in key_value:
+                key, value = key_value.split('=', 1)
+                # Декодируем URL-encoded значение
+                decoded_value = urllib.parse.unquote(value)
+                params[key] = decoded_value
+                i += 2 # Пропускаем два элемента: 'param' и 'ключ=значение'
+                n = i
+                continue
+            
+        i += 1
+    
+    return params, parts[n:]
 
 
 def build_url(segments, query_params=None):
@@ -734,7 +827,7 @@ async def handle_redirect(response, original_headers, method, data, redirect_cou
 
 
 def is_valid_json(text):
-    """Проверка валидности JSON"""
+    """Проверка валидности JSON включая примитивы"""
     if not text:
         return False
 
@@ -742,35 +835,23 @@ def is_valid_json(text):
     if not text:
         return False
 
+    # # Явно проверяем JSON примитивы
+    # if text in ['null', 'true', 'false']:
+    #     return True
+
+    # # Проверяем числа
+    # if text.isdigit() or (text.startswith('-') and text[1:].isdigit()):
+    #     return True
+
+    # Стандартная проверка JSON
     if (text.startswith('{') and text.endswith('}')) or (text.startswith('[') and text.endswith(']')):
         try:
             json.loads(text)
             return True
         except (json.JSONDecodeError, ValueError):
             return False
+
     return False
-
-
-def parse_cookie_plus_params(segments):
-    params = {}
-    i = 1
-    while i < len(segments):
-        if segments[i] == 'param' and i + 1 < len(segments):
-            if segments[i + 1].startswith('Cookie='):
-                params['Cookie'] = urllib.parse.unquote(segments[i + 1][7:])
-            else:
-                key_val = segments[i + 1].split('=', 1)
-                if len(key_val) == 2:
-                    key = urllib.parse.unquote(key_val[0])
-                    value = urllib.parse.unquote(key_val[1])
-                    params[key] = value
-            i += 2
-        elif '://' in segments[i]:
-            break
-        else:
-            i += 1
-
-    return params
 
 
 async def make_request_with_proxy(target_url, method='GET', data=None, headers=None, retry_count=0):
@@ -780,8 +861,6 @@ async def make_request_with_proxy(target_url, method='GET', data=None, headers=N
     if not proxy:
         logger.warning("No working proxies available, making direct request")
         return await make_direct_request(target_url, method, data, headers)
-
-    logger.info(f"Making {method} request through proxy: {proxy}")
 
     try:
         result = await make_direct_request(target_url, method, data, headers, proxy)
@@ -805,6 +884,7 @@ async def make_request_with_proxy(target_url, method='GET', data=None, headers=N
 async def make_direct_request(target_url, method='GET', data=None, headers=None, proxy=None):
     """Выполнение HTTP запроса напрямую или через указанный прокси"""
     logger.info(f"Making {method} request to: {target_url}, proxy: {proxy}")
+    logger.debug(f"Request data type: {type(data)}, length: {len(data) if data else 0}")
 
     target_url = normalize_url(target_url)
 
@@ -935,34 +1015,25 @@ async def handle_encoded_request(segments, method='GET', post_data=None, query_p
 
     encoded_part = segments[1]
     additional_segments = segments[2:]
+    handler_type = segments[0]
 
     # Декодируем base64 данные
     decoded_data = decode_base64_url(encoded_part)
-    logger.debug(f"Decoded data: {decoded_data}")
+    logger.info(f"Decoded data: {decoded_data} from encoded: {handler_type}")
 
     # Парсим параметры из декодированных данных
-    encoded_params, url_segments_from_encoded = parse_encoded_data(
-        decoded_data)
+    encoded_params, url_segments_from_encoded = parse_encoded_data(decoded_data)
 
     # Определяем целевой URL в зависимости от типа кодирования
-    handler_type = segments[0]
     target_url = ""
 
     if handler_type in ['enc', 'enc1', 'enc3']:
         if not additional_segments:
             raise ValueError("No URL found in encoded data for enc")
 
-        cookie_plus_params = parse_cookie_plus_params(
-            url_segments_from_encoded)
-        if cookie_plus_params:
-            for key in ['User-Agent', 'Origin', 'Referer', 'Cookie', 'Content-Type', 'Accept',
-                        'x-csrf-token', 'Sec-Fetch-Dest', 'Sec-Fetch-Mode', 'Sec-Fetch-Site']:
-                if key in cookie_plus_params:
-                    request_headers[key] = cookie_plus_params[key]
-
         if encoded_params:
             for key in ['User-Agent', 'Origin', 'Referer', 'Cookie', 'Content-Type', 'Accept',
-                        'x-csrf-token', 'Sec-Fetch-Dest', 'Sec-Fetch-Mode', 'Sec-Fetch-Site']:
+                        'x-csrf-token', 'Sec-Fetch-Dest', 'Sec-Fetch-Mode', 'Sec-Fetch-Site', 'Authorization', 'Range']:
                 if key in encoded_params:
                     request_headers[key] = encoded_params[key]
 
@@ -994,22 +1065,22 @@ async def handle_encoded_request(segments, method='GET', post_data=None, query_p
 
         target_url = build_url(url_segments_from_encoded, query_params)
 
-    logger.info(
-        f"Proxying {method} with encode type {handler_type} request to: {target_url}")
+    logger.info(f"Proxying {method} with encode type {handler_type} request to: {target_url}")
 
     # Улучшенная проверка видео с использованием HEAD запроса
     is_video = False
     content_info = {}
 
+    # Проверка на наличие стрима
     if method.upper() == 'GET':
         is_video, content_info = await is_video_content(target_url, request_headers)
 
     if is_video:
         logger.info(f"Video content detected, using streaming: {target_url}")
-        range_header = request_headers.get(
-            'Range') if request_headers else None
+        range_header = request_headers.get('Range') if request_headers else None
         return await stream_video_with_range(target_url, request_headers, range_header), 200, ''
 
+    # Отправка запроса на проксирующий сервер
     response = await make_request(
         target_url,
         method,
@@ -1193,7 +1264,7 @@ async def proxy(request: Request, path: str):
 
     # Быстрое извлечение заголовков
     request_headers = {}
-    for header in ['User-Agent', 'Accept', 'Content-Type', 'Origin', 'Referer', 'Cookie', 'Range']:
+    for header in ['User-Agent', 'Accept', 'Content-Type', 'Origin', 'Referer', 'Cookie', 'Range', 'Authorization']:
         if value := request.headers.get(header):
             request_headers[header] = value
 
@@ -1201,20 +1272,32 @@ async def proxy(request: Request, path: str):
     if 'Range' in request_headers:
         logger.info(f"Client Range header: {request_headers['Range']}")
 
-    # Обработка тела запроса с ограничением размера
     post_data = None
+
+    # Извлечение тела запроса
     if request.method in ["POST", "PUT", "DELETE"]:
-        content_length = request.headers.get("content-length")
-        if content_length:
-            try:
-                if int(content_length) > CONFIG['max_request_size']:
-                    return JSONResponse(
-                        content={'error': 'Request size too large'},
-                        status_code=413
-                    )
+        try:
+            content_type = request.headers.get('content-type', '').lower()
+            if 'application/x-www-form-urlencoded' in content_type:
+                body = await request.body()
+                post_data = body.decode('utf-8')
+
+            elif 'multipart/form-data' in content_type:
+                form_data = await request.form()
+                post_data = dict(form_data)
+                
+            elif 'application/json' in content_type:
                 post_data = await request.body()
-            except ValueError:
-                logger.warning(f"Invalid Content-Length: {content_length}")
+
+            else:
+                post_data = await request.body()
+
+        except Exception as e:
+            logger.error(f"Error reading request body: {e}")
+            return JSONResponse(
+                content={'error': f'Failed to read request body: {str(e)}'},
+                status_code=400
+            )
 
     # Извлечение параметров запроса
     query_params = dict(request.query_params)
@@ -1248,6 +1331,7 @@ async def proxy(request: Request, path: str):
                 try:
                     content = json.loads(
                         response_body) if response_body else {}
+
                 except:
                     content = response_body
 

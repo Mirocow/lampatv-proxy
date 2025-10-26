@@ -5,7 +5,6 @@ from fastapi import HTTPException
 from src.proxy_server import (
     make_direct_request,
     make_request_with_proxy,
-    handle_encoded_request,
     handle_direct_request,
     handle_request
 )
@@ -58,24 +57,6 @@ class TestErrorHandling:
                 assert result['status'] == 404  # Fallback to direct request
 
     @pytest.mark.asyncio
-    async def test_handle_encoded_request_invalid_data(self):
-        """Тест обработки невалидных закодированных данных"""
-        segments = ["enc", "invalid-base64-data"]
-
-        with pytest.raises(ValueError):
-            await handle_encoded_request(segments, 'GET', None, {}, {})
-
-    @pytest.mark.asyncio
-    async def test_handle_encoded_request_enc_missing_url(self):
-        """Тест обработки enc запроса без URL"""
-        test_data = "param/User-Agent=TestAgent"
-        encoded = base64.b64encode(test_data.encode()).decode().rstrip('=')
-        segments = ["enc", encoded]  # Нет дополнительных сегментов с URL
-
-        with pytest.raises(ValueError):
-            await handle_encoded_request(segments, 'GET', None, {}, {})
-
-    @pytest.mark.asyncio
     async def test_handle_direct_request_video_stream_error(self):
         """Тест ошибки при потоковой передаче видео"""
         with patch('src.proxy_server.is_video_content') as mock_video:
@@ -102,7 +83,7 @@ class TestErrorHandling:
     async def test_handle_request_unknown_handler(self):
         """Тест обработки неизвестного обработчика"""
         # Простой URL без специального обработчика
-        result = await handle_request("https://example.com/api", 'GET', None, {}, {})
+        result = await handle_request("https://google.com", 'GET', None, {}, {})
         # Должен использовать handle_direct_request
         assert result[1] == 200  # Mock возвращает 200
 

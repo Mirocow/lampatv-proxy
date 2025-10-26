@@ -8,7 +8,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - PYTHONPATH=/app
+      - PYTHONPATH=/app/src
     env_file:
       - .env
     restart: unless-stopped
@@ -23,7 +23,18 @@ services:
       context: .
       dockerfile: Dockerfile.test
     command: >
-      sh -c "python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=html --asyncio-mode=auto -W ignore::DeprecationWarning"
+      sh -c "
+        python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=html --asyncio-mode=auto -W ignore::DeprecationWarning;
+      "
+    # command: >
+    #   sh -c "
+    #     echo 'Waiting for debugger on port 5678...';
+    #     python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=html --asyncio-mode=auto -W ignore::DeprecationWarning;
+    #     echo 'Tests completed. Container will remain alive for 1 hour.';
+    #     sleep 3600
+    #   "
+    ports:
+      - "5678:5678"
     environment:
       - PYTHONPATH=/app/src
       - LOG_LEVEL=ERROR
@@ -41,6 +52,9 @@ services:
       - MAX_RANGE_SIZE=10485760
       - MAX_REQUEST_SIZE=1048576
       - HEAD_REQUEST_TIMEOUT=10
+      - PYDEVD_DISABLE_FILE_VALIDATION=1
+    env_file:
+      - .env
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro
@@ -55,8 +69,7 @@ services:
     command: >
       sh -c "python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m uvicorn src.proxy_server:app --host 0.0.0.0 --port 8080"
     environment:
-      - PYTHONPATH=/app
-      - LOG_LEVEL=INFO
+      - PYTHONPATH=/app/src
     env_file:
       - .env
     ports:
