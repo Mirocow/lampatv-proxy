@@ -1,2 +1,3 @@
+htmlcov/.*
 .history
 .env

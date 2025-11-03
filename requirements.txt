@@ -6,6 +6,6 @@ httpx-socks[asyncio]==v0.10.1
 python-socks[asyncio]==v2.7.2
 socksio==1.0.0
 anyio>=3.0.0
-
+pydantic==2.5.0
 
 

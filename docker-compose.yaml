@@ -1,8 +1,8 @@
-version: '3.8'
+version: "3.8"
 
 services:
   lampa-proxy:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     ports:
@@ -22,17 +22,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+    # -v --cov=src.implementations.request_processor --cov-report=term-missing
     command: >
       sh -c "
         python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=html --asyncio-mode=auto -W ignore::DeprecationWarning;
       "
-    # command: >
-    #   sh -c "
-    #     echo 'Waiting for debugger on port 5678...';
-    #     python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=html --asyncio-mode=auto -W ignore::DeprecationWarning;
-    #     echo 'Tests completed. Container will remain alive for 1 hour.';
-    #     sleep 3600
-    #   "
     ports:
       - "5678:5678"
     environment:
@@ -67,7 +61,7 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     command: >
-      sh -c "python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m uvicorn src.proxy_server:app --host 0.0.0.0 --port 8080"
+      sh -c "python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m uvicorn src.main:app --host 0.0.0.0 --port 8080"
     environment:
       - PYTHONPATH=/app/src
     env_file:
