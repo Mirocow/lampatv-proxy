@@ -8,8 +8,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from src.models.interfaces import IRouter, IContentProcessor, IHttpClientFactory, IProxyManager, IConfig
 from src.services.request_handler import RequestHandler
 from src.models.responses import (
-    HealthResponse, HttpFactoryInfoResponse, ProxyResponse, StatusResponse, RootResponse,
-    ErrorResponse, ProxyStatsResponse, EncodedRequestParams, ApiResponse
+    HealthResponse, HttpFactoryInfoResponse, ProxyResponse, RootResponse,
+    ErrorResponse, ProxyStatsResponse, EncodedRequestParams, ApiResponse, ApiInfoResponse
 )
 
 
@@ -44,27 +44,25 @@ class AppRouter(IRouter):
                 version="3.2.1"
             )
 
-        @app.get("/stats", response_model=ProxyStatsResponse)
+        @app.get("/info", response_model=ApiInfoResponse)
         async def stats():
-            return self.proxy_manager.get_stats()
+            client_cache_info = self.http_factory.get_client_cache_info()
 
-        @app.get("/status", response_model=StatusResponse)
-        async def status():
-            return StatusResponse(
-                status="operational",
-                message="Lampa Proxy Server is running normally"
+            return ApiInfoResponse(
+                status="running",
+                timestamp=datetime.now().isoformat(),
+                config=self.config.to_dict(),
+                http_client_factory=client_cache_info
             )
+
 
         @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
         async def proxy_request(request: Request, path: str):
             """Основной прокси-маршрут для обработки всех запросов с поддержкой enc/enc1/enc2/enc3"""
             try:
                 # Пропускаем служебные эндпоинты
-                if path in ["", "health", "status", "stats"]:
-                    return JSONResponse(
-                        content={'error': 'Use direct endpoints for server information'},
-                        status_code=400
-                    )
+                if path in ["", "health", "stats", "favicon.ico"]:
+                    return
 
                 # Извлекаем заголовки запроса
                 request_headers = {}

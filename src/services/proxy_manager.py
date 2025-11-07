@@ -87,7 +87,7 @@ class ProxyManager(IProxyManager):
                                 else:
                                     data = response.read()
 
-                                self.logger.info(f"✓ Proxy {proxy} is working with {test_url},: {data}")
+                                #self.logger.info(f"✓ Proxy {proxy} is working with {test_url},: {data}")
 
                             except:
                                 self.logger.info(f"✗ Proxy test response text: {response.text[:200]}...")
@@ -163,34 +163,34 @@ class ProxyManager(IProxyManager):
         self.logger.debug(f"Selected random proxy: {proxy}")
         return proxy
 
-    def get_proxy_with_failover(self, excluded_proxies: List[str] = None) -> Optional[str]:
-        """
-        Получение прокси с исключением неудачных
-        """
-        if not self._working_proxies:
-            return None
+    # def get_proxy_with_failover(self, excluded_proxies: List[str] = None) -> Optional[str]:
+    #     """
+    #     Получение прокси с исключением неудачных
+    #     """
+    #     if not self._working_proxies:
+    #         return None
 
-        available_proxies = self._working_proxies.copy()
+    #     available_proxies = self._working_proxies.copy()
 
-        # Исключаем указанные прокси
-        if excluded_proxies:
-            available_proxies = [
-                p for p in available_proxies if p not in excluded_proxies]
+    #     # Исключаем указанные прокси
+    #     if excluded_proxies:
+    #         available_proxies = [
+    #             p for p in available_proxies if p not in excluded_proxies]
 
-        if not available_proxies:
-            self.logger.warning("No available proxies after failover exclusion")
-            return None
+    #     if not available_proxies:
+    #         self.logger.warning("No available proxies after failover exclusion")
+    #         return None
 
-        # Предпочитаем прокси с лучшей статистикой
-        available_proxies.sort(
-            key=lambda p: self._proxy_stats.get(p, {}).get('success', 0) -
-            self._proxy_stats.get(p, {}).get('failures', 0),
-            reverse=True
-        )
+    #     # Предпочитаем прокси с лучшей статистикой
+    #     available_proxies.sort(
+    #         key=lambda p: self._proxy_stats.get(p, {}).get('success', 0) -
+    #         self._proxy_stats.get(p, {}).get('failures', 0),
+    #         reverse=True
+    #     )
 
-        selected_proxy = available_proxies[0]
-        self.logger.debug(f"Selected proxy with failover: {selected_proxy}")
-        return selected_proxy
+    #     selected_proxy = available_proxies[0]
+    #     self.logger.debug(f"Selected proxy with failover: {selected_proxy}")
+    #     return selected_proxy
 
     async def mark_proxy_success(self, proxy: str):
         """
@@ -248,24 +248,24 @@ class ProxyManager(IProxyManager):
             total_failures=total_failures
         )
 
-    def get_detailed_stats(self) -> Dict:
-        """
-        Получение детальной статистики
-        """
-        stats = self.get_stats().dict()
-        stats['total_proxies_tested'] = len(self._proxy_stats)
+    # def get_detailed_stats(self) -> Dict:
+    #     """
+    #     Получение детальной статистики
+    #     """
+    #     stats = self.get_stats().dict()
+    #     stats['total_proxies_tested'] = len(self._proxy_stats)
 
-        total_requests = stats['total_success'] + stats['total_failures']
-        stats['success_rate'] = (
-            (stats['total_success'] / total_requests) if total_requests > 0 else 0
-        )
+    #     total_requests = stats['total_success'] + stats['total_failures']
+    #     stats['success_rate'] = (
+    #         (stats['total_success'] / total_requests) if total_requests > 0 else 0
+    #     )
 
-        return stats
+    #     return stats
 
-    def clear_stats(self):
-        """Очистка статистики"""
-        self._proxy_stats.clear()
-        self.logger.info("Proxy statistics cleared")
+    # def clear_stats(self):
+    #     """Очистка статистики"""
+    #     self._proxy_stats.clear()
+    #     self.logger.info("Proxy statistics cleared")
 
     def __len__(self) -> int:
         """Количество рабочих прокси"""

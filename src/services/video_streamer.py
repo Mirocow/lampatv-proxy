@@ -29,10 +29,12 @@ class VideoStreamer(IVideoStreamer):
                            range_header: str = None) -> StreamingResponse:
 
         self.logger.info(
-            f"Streaming video with range support from: {target_url}")
-        self.logger.debug(f"Range header: {range_header}")
+            f"Video content detected, using streaming: {target_url} with range {range_header}")
 
-        content_info = await self.content_getter.get_content_info(target_url, request_headers, use_head=True)
+        content_info = await self.content_getter.get_content_info(
+            target_url,
+            request_headers,
+            use_head=True)
 
         if content_info.error:
             raise HTTPException(
@@ -50,6 +52,7 @@ class VideoStreamer(IVideoStreamer):
 
         start_byte, end_byte = self._parse_range_header(
             range_header, file_size)
+
         self.logger.info(
             f"Requested range: {start_byte}-{end_byte} (file size: {file_size})")
 
@@ -59,14 +62,17 @@ class VideoStreamer(IVideoStreamer):
                 request_headers['Range'] = f'bytes={start_byte}-{end_byte}'
             else:
                 request_headers['Range'] = f'bytes={start_byte}-'
+
             range_requested = True
             self.logger.info(
-                f"Sending Range to source: {request_headers['Range']}")
+                f"Streaming Range to source: {request_headers['Range']}")
 
         stream_generator = self._create_stream_generator(
             target_url, request_headers)
+
         response_headers = self._prepare_response_headers(
             content_type, range_requested, start_byte, end_byte, file_size)
+
         status_code = 206 if range_requested else 200
 
         return StreamingResponse(
@@ -84,9 +90,9 @@ class VideoStreamer(IVideoStreamer):
         try:
             proxy = await self.proxy_generator.get_proxy() if self.proxy_generator.has_proxies() else None
 
-            timeout_multiplier = 10.0
+            timeout_multiplier = 30.0
             if proxy:
-                timeout_multiplier = 30.0
+                timeout_multiplier = 60.0
 
             # Создаем таймаут для видео потока
             timeout = self.timeout_configurator.create_timeout_config(
@@ -121,27 +127,40 @@ class VideoStreamer(IVideoStreamer):
 
                     response_content_type = response.headers.get(
                         'content-type', '')
+
                     content_range = response.headers.get('content-range', '')
+
                     response_content_length = response.headers.get(
                         'content-length', 'unknown')
 
                     self.logger.info(
                         f"Video content-type: {response_content_type}")
+
                     self.logger.info(f"Content-Range: {content_range}")
+
                     self.logger.info(
                         f"Content-Length: {response_content_length}")
 
+                    # Определяем ожидаемое количество байт
                     expected_bytes = self._get_expected_bytes(
                         content_range, response_content_length)
 
+                    # Читаем и передаем данные чанками
                     async for chunk in response.aiter_bytes(chunk_size=self.config.stream_chunk_size):
                         if not stream_active:
                             break
 
-                        bytes_streamed += len(chunk)
-                        self.logger.debug(
-                            f"Streamed {bytes_streamed} bytes so far")
+                        # Добавляем небольшую задержку для управления потоком
+                        # Это предотвращает перегрузку клиента
+                        await asyncio.sleep(0.0005)  # 1ms задержка
 
+                        bytes_streamed += len(chunk)
+
+                        # Логируем прогресс каждые 10MB для отладки
+                        if bytes_streamed % (10 * 1024 * 1024) == 0:
+                            self.logger.debug(f"Stream progress: {bytes_streamed // (1024 * 1024)}MB")
+
+                        # Проверяем, не достигли ли мы ожидаемого конца
                         if expected_bytes > 0 and bytes_streamed >= expected_bytes:
                             self.logger.info(
                                 f"Reached expected end of stream: {bytes_streamed}/{expected_bytes} bytes")
@@ -156,15 +175,31 @@ class VideoStreamer(IVideoStreamer):
                     if proxy:
                         await self.proxy_generator.mark_success(proxy)
 
-        except asyncio.CancelledError:
-            self.logger.info("Video stream was cancelled by client")
+        except asyncio.CancelledError as e:
+            self.logger.info(f"Video stream was cancelled by client: {str(e)}")
+            stream_active = False
+
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"HTTP error during video streaming: {e.response.status_code}")
+            stream_active = False
+
+        except httpx.TimeoutException:
+            self.logger.error(f"Video stream timeout: {target_url}")
+            stream_active = False
+
+        except httpx.RequestError as e:
+            self.logger.error(f"Video stream request error: {str(e)}")
+            stream_active = False
+
         except Exception as e:
-            self.logger.error(f"Video stream error: {str(e)}")
+            self.logger.error(f"Unexpected video stream error: {str(e)}")
+            stream_active = False
             if proxy:
                 await self.proxy_generator.mark_failure(proxy)
 
     def _get_expected_bytes(self, content_range: str, response_content_length: str) -> int:
         if content_range:
+            # Парсим Content-Range: bytes start-end/total
             match = re.match(r'bytes\s+(\d+)-(\d+)/(\d+)', content_range)
             if match:
                 range_start = int(match.group(1))
@@ -180,6 +215,7 @@ class VideoStreamer(IVideoStreamer):
                 self.logger.info(
                     f"Expected bytes from Content-Length: {expected_bytes}")
                 return expected_bytes
+
             except ValueError:
                 pass
 
@@ -193,23 +229,29 @@ class VideoStreamer(IVideoStreamer):
                                   file_size: int) -> Dict[str, str]:
         response_headers = {
             'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': '*',
             'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
             'Content-Type': content_type,
             'X-Content-Type-Options': 'nosniff',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+            'Keep-Alive': 'timeout=600',
         }
 
+        # Устанавливаем правильный статус код и заголовки
         if range_requested and file_size > 0:
             content_length = end_byte - start_byte + 1
             response_headers['Content-Range'] = f'bytes {start_byte}-{end_byte}/{file_size}'
             response_headers['Content-Length'] = str(content_length)
             self.logger.info(
                 f"Sending 206 Partial Content: {content_length} bytes (range: {start_byte}-{end_byte})")
+
         elif not range_requested and file_size > 0:
             response_headers['Content-Length'] = str(file_size)
             self.logger.info(f"Sending 200 OK: {file_size} bytes")
+
         else:
             self.logger.info(
                 "Sending response without Content-Length (unknown file size)")

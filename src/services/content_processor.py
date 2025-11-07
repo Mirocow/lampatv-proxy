@@ -32,7 +32,6 @@ class ContentProcessor(IContentProcessor):
         if method.upper() == 'GET':
             is_video = await self._is_video_content(target_url, headers)
             if is_video:
-                self.logger.info(f"Video content detected, using streaming: {target_url}")
                 return await self.video_streamer.stream_video(target_url, headers, range_header)
 
         # Для не-GET запросов или не-видео контента используем обычный процессор

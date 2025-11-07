@@ -13,11 +13,6 @@ class HttpFactoryInfoResponse(BaseModel):
     config: Dict[str, float]
 
 
-class StatusResponse(BaseModel):
-    status: str
-    message: str
-
-
 class RootResponse(BaseModel):
     name: str
     version: str
@@ -103,3 +98,9 @@ class ApiResponse(BaseModel):
     data: Optional[Any] = None
     error: Optional[str] = None
     message: Optional[str] = None
+
+class ApiInfoResponse(BaseModel):
+    status: str
+    timestamp: str
+    config: Dict[str, Any]
+    http_client_factory: Dict[str, Any]

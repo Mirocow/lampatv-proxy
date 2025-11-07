@@ -68,6 +68,40 @@ class AppConfig(IConfig):
                 for p in proxy_list_str.split(',') if p.strip()
             ]
 
+    def to_dict(self) -> dict:
+        """Возвращает все параметры конфигурации в виде словаря"""
+        result = {}
+        try:
+            # Пытаемся получить __dict__ экземпляра
+            instance_dict = self.__dict__
+            for key, value in instance_dict.items():
+                if key.startswith('_') and not key.startswith('__'):
+                    if not callable(value):
+                        clean_key = key[1:]
+                        result[clean_key] = value
+        except (AttributeError, TypeError):
+            # Если __dict__ недоступен, используем альтернативный подход
+            return self._to_dict_fallback()
+
+        return result
+
+    def _to_dict_fallback(self) -> dict:
+        """Альтернативный метод для случаев, когда __dict__ недоступен"""
+        result = {}
+        for attr_name in dir(self):
+            if (attr_name.startswith('_') and
+                not attr_name.startswith('__') and
+                not attr_name.endswith('__')):
+                try:
+                    attr_value = getattr(self, attr_name)
+                    if not callable(attr_value) and not isinstance(attr_value, type):
+                        key = attr_name[1:]
+                        result[key] = attr_value
+                except (AttributeError, TypeError):
+                    continue
+
+        return result
+
     @property
     def log_level(self) -> str:
         return self._log_level

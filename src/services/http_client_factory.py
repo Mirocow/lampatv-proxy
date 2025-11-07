@@ -48,6 +48,18 @@ class HttpClientFactory(IHttpClientFactory):
         finally:
             await client.aclose()
 
+    def get_client_cache_info(self) -> Dict:
+        """Получение информации о кэше клиентов"""
+        return {
+            'cached_clients': len(self._client_cache),
+            'config': {
+                'timeout_connect': self.config.timeout_connect,
+                'timeout_read': self.config.timeout_read,
+                'timeout_write': self.config.timeout_write,
+                'timeout_pool': self.config.timeout_pool,
+            }
+        }
+
     async def cleanup(self):
         for client_key, client in self._client_cache.items():
             try:
