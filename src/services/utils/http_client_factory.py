@@ -1,18 +1,20 @@
-import logging
 from typing import Dict, AsyncGenerator
 from contextlib import asynccontextmanager
 import httpx
 
+from src.utils.logger import get_logger
 from src.models.interfaces import IHttpClientFactory, IConfig, ITimeoutConfigurator
 
 
 class HttpClientFactory(IHttpClientFactory):
     """Фабрика HTTP клиентов"""
 
-    def __init__(self, config: IConfig, timeout_configurator: ITimeoutConfigurator):
+    def __init__(self,
+                 config: IConfig,
+                 timeout_configurator: ITimeoutConfigurator):
         self.config = config
         self.timeout_configurator = timeout_configurator
-        self.logger = logging.getLogger('lampa-proxy-http-factory')
+        self.logger = get_logger('http-factory', self.config.log_level)
         self._client_cache = {}
 
     @asynccontextmanager

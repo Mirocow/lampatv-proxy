@@ -1,16 +1,18 @@
-import logging
 from typing import Optional
 
+from src.utils.logger import get_logger
 from src.models.interfaces import IProxyGenerator, IProxyManager, IConfig
 
 
 class DefaultProxyGenerator(IProxyGenerator):
     """Генератор прокси по умолчанию"""
 
-    def __init__(self, proxy_manager: IProxyManager, config: IConfig):
+    def __init__(self,
+                 proxy_manager: IProxyManager,
+                 config: IConfig):
         self.proxy_manager = proxy_manager
         self.config = config
-        self.logger = logging.getLogger('lampa-proxy-generator')
+        self.logger = get_logger('proxy-generator', self.config.log_level)
 
     async def get_proxy(self) -> Optional[str]:
         if not self.has_proxies():

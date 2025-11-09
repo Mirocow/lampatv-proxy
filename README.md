@@ -1,4 +1,4 @@
-# JsonP Proxy Server
+# LampaTV Proxy Server
 
 * lampa-proxy - основной сервер
 
@@ -27,7 +27,7 @@
 * ✅ Добавлена поддержка CORS через middleware
 
 
-## Сборка и запуск 
+## Сборка и запуск
 
 ### Сборка и запуск
 

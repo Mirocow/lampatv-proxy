@@ -1,4 +1,4 @@
-import logging
+from src.utils.logger import get_logger
 
 
 class ApplicationLifecycle:
@@ -7,7 +7,7 @@ class ApplicationLifecycle:
     def __init__(self, container, application):
         self.container = container
         self.application = application
-        self.logger = logging.getLogger('lampa-proxy-lifecycle')
+        self.logger = get_logger('lifecycle')
 
     async def startup(self):
         """Запуск приложения"""

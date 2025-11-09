@@ -1,12 +1,14 @@
 import httpx
 
+from src.utils.logger import get_logger
 from src.models.interfaces import ITimeoutConfigurator, IConfig
 
 
 class TimeoutConfigurator(ITimeoutConfigurator):
     """Класс для конфигурации таймаутов HTTP клиентов"""
 
-    def __init__(self, config: IConfig):
+    def __init__(self,
+                 config: IConfig):
         self.config = config
 
     def create_timeout_config(self, timeout_multiplier: int = 1) -> httpx.Timeout:

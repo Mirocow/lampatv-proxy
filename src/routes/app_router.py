@@ -1,15 +1,12 @@
-import base64
-import json
 from datetime import datetime
-from typing import Dict, Any
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from src.models.interfaces import IRouter, IContentProcessor, IHttpClientFactory, IProxyManager, IConfig
-from src.services.request_handler import RequestHandler
+from src.services.handlers.request_handler import RequestHandler
 from src.models.responses import (
-    HealthResponse, HttpFactoryInfoResponse, ProxyResponse, RootResponse,
-    ErrorResponse, ProxyStatsResponse, EncodedRequestParams, ApiResponse, ApiInfoResponse
+    HealthResponse, ProxyResponse, RootResponse,
+    ApiInfoResponse
 )
 
 
@@ -83,13 +80,17 @@ class AppRouter(IRouter):
                         if 'application/x-www-form-urlencoded' in content_type:
                             body = await request.body()
                             post_data = body.decode('utf-8')
+
                         elif 'multipart/form-data' in content_type:
                             form_data = await request.form()
                             post_data = dict(form_data)
+
                         elif 'application/json' in content_type:
                             post_data = await request.json()
+
                         else:
                             post_data = await request.body()
+
                     except Exception as e:
                         self.logger.error(f"Error reading request body: {str(e)}")
                         return JSONResponse(
@@ -99,6 +100,8 @@ class AppRouter(IRouter):
 
                 # Извлечение параметров запроса
                 query_params = dict(request.query_params)
+
+                self.config.our_domain = self._get_current_domain(request)
 
                 # Обработка запроса через RequestHandler
                 response_body, response_status, response_content_type = await self.request_handler.handle_request(
@@ -138,7 +141,8 @@ class AppRouter(IRouter):
                     )
 
                 return Response(
-                    content=response_body if isinstance(response_body, bytes) else str(response_body).encode(),
+                    content=response_body if isinstance(response_body, bytes)
+                        else str(response_body).encode(),
                     status_code=response_status,
                     media_type=response_content_type,
                     headers={
@@ -148,7 +152,6 @@ class AppRouter(IRouter):
                 )
 
             except HTTPException as e:
-                # Обрабатываем HTTPException отдельно
                 return JSONResponse(
                     status_code=e.status_code,
                     content={'error': e.detail},
@@ -185,3 +188,20 @@ class AppRouter(IRouter):
                 status_code=500,
                 content={"error": "Internal server error"}
             )
+
+    def _get_current_domain(self, request: Request):
+        # Из заголовка Host
+        host = request.headers.get('Host', '')
+
+        # Или из заголовков X-Forwarded-Host для прокси
+        forwarded_host = request.headers.get('X-Forwarded-Host', '')
+
+        # Или из Origin/Referer
+        origin = request.headers.get('Origin', '')
+        referer = request.headers.get('Referer', '')
+
+        domain = forwarded_host or host
+        # if ':' in domain:
+        #     domain = domain.split(':')[0]  # Убираем порт
+
+        return domain

@@ -1,23 +1,29 @@
-import logging
 import re
 import urllib.parse
 from typing import Dict, Any, AsyncGenerator
 import httpx
 
+from src.utils.logger import get_logger
 from src.models.interfaces import IRequestProcessor, IConfig, IHttpClientFactory, IProxyGenerator, ITimeoutConfigurator
 from src.models.responses import ProxyResponse
+
+
+URL_PATTERN = re.compile(r'(https?:/)([^/])', flags=re.IGNORECASE)
 
 
 class RequestProcessor(IRequestProcessor):
     """Обработчик запросов"""
 
-    def __init__(self, config: IConfig, http_factory: IHttpClientFactory,
-                 proxy_generator: IProxyGenerator, timeout_configurator: ITimeoutConfigurator):
+    def __init__(self,
+                 config: IConfig,
+                 http_factory: IHttpClientFactory,
+                 proxy_generator: IProxyGenerator,
+                 timeout_configurator: ITimeoutConfigurator):
         self.config = config
         self.http_factory = http_factory
         self.proxy_generator = proxy_generator
         self.timeout_configurator = timeout_configurator
-        self.logger = logging.getLogger('lampa-proxy-request-processor')
+        self.logger = get_logger('request-processor', self.config.log_level)
 
     async def process_request(self,
                            target_url: str,
@@ -72,36 +78,37 @@ class RequestProcessor(IRequestProcessor):
                 proxy=proxy,
                 timeout=timeout
             ) as client:
+
                 response = await client.request(method, target_url, **request_params)
 
-            self.logger.info(f"Response status: {response.status_code}")
+                self.logger.info(f"Response status: {response.status_code}")
 
-            # Обрабатываем редиректы
-            if response.status_code in [301, 302, 303, 307, 308]:
-                async for redirect_result in self._handle_redirect(response, request_headers, method, data):
-                    yield redirect_result
-                return
+                # Обрабатываем редиректы
+                if response.status_code in [301, 302, 303, 307, 308]:
+                    async for redirect_result in self._handle_redirect(response, request_headers, method, data):
+                        yield redirect_result
+                    return
 
-            if proxy:
-                await self.proxy_generator.mark_success(proxy)
+                if proxy:
+                    await self.proxy_generator.mark_success(proxy)
 
-            # Собираем cookies
-            cookies = []
-            resp_headers = {}
-            for name, value in response.headers.multi_items():
-                name_lower = name.lower()
-                if name_lower == 'set-cookie':
-                    cookies.append(value)
-                resp_headers[name_lower] = value
-            resp_headers['set-cookie'] = cookies
+                # Собираем cookies
+                cookies = []
+                resp_headers = {}
+                for name, value in response.headers.multi_items():
+                    name_lower = name.lower()
+                    if name_lower == 'set-cookie':
+                        cookies.append(value)
+                    resp_headers[name_lower] = value
+                resp_headers['set-cookie'] = cookies
 
-            yield ProxyResponse(
-                currentUrl=str(response.url),
-                cookie=cookies,
-                headers=resp_headers,
-                status=response.status_code,
-                body=response.text
-            )
+                yield ProxyResponse(
+                    currentUrl=str(response.url),
+                    cookie=cookies,
+                    headers=resp_headers,
+                    status=response.status_code,
+                    body=response.text
+                )
 
         except httpx.TimeoutException:
             self.logger.error(f"✕ Request timeout: {target_url}")
@@ -177,7 +184,7 @@ class RequestProcessor(IRequestProcessor):
             url = 'https:' + url
             self.logger.debug(f"Fixed protocol-relative URL: {url}")
 
-        url = re.sub(r'(https?:/)([^/])', r'\1/\2', url)
+        url = URL_PATTERN.sub(r'\1/\2', url)
 
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url

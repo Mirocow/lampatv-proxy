@@ -1,8 +1,7 @@
-import logging
-import re
 from typing import Dict
-import httpx
 
+from src.utils.url_utils import FULL_RANGE_MATCH_PATTERN
+from src.utils.logger import get_logger
 from src.models.interfaces import IContentInfoGetter, IConfig, IHttpClientFactory, IProxyGenerator, ITimeoutConfigurator
 from src.models.responses import ContentInfoResponse
 
@@ -10,13 +9,16 @@ from src.models.responses import ContentInfoResponse
 class ContentInfoGetter(IContentInfoGetter):
     """Получение информации о контенте"""
 
-    def __init__(self, config: IConfig, http_factory: IHttpClientFactory,
-                 proxy_generator: IProxyGenerator, timeout_configurator: ITimeoutConfigurator):
+    def __init__(self,
+                 config: IConfig,
+                 http_factory: IHttpClientFactory,
+                 proxy_generator: IProxyGenerator,
+                 timeout_configurator: ITimeoutConfigurator):
         self.config = config
         self.http_factory = http_factory
         self.proxy_generator = proxy_generator
         self.timeout_configurator = timeout_configurator
-        self.logger = logging.getLogger('lampa-proxy-content-getter')
+        self.logger = get_logger('content-getter', self.config.log_level)
 
     async def get_content_info(self, url: str, headers: Dict = None, use_head: bool = True) -> ContentInfoResponse:
         if headers is None:
@@ -100,7 +102,7 @@ class ContentInfoGetter(IContentInfoGetter):
                 error=str(e)
             )
 
-    async def _try_get_requests(self, url: str, headers: Dict) -> ContentInfoResponse:
+    async def _try_get_requests(self, target_url: str, headers: Dict) -> ContentInfoResponse:
         strategies = [
             {'Range': 'bytes=0-0', 'description': 'Range 0-0'},
             {'Range': 'bytes=0-999', 'description': 'Range 0-999'},
@@ -133,13 +135,13 @@ class ContentInfoGetter(IContentInfoGetter):
                     timeout=timeout
                 ) as client:
 
-                    async with client.stream('GET', url) as response:
+                    async with client.stream('GET', target_url) as response:
                         content_length = 0
 
                         # Парсим Content-Range для определения полного размера
                         if response.status_code == 206 and 'content-range' in response.headers:
                             content_range = response.headers['content-range']
-                            match = re.match(r'bytes\s+\*?/?(\d+)-?(\d+)?/(\d+)', content_range)
+                            match = FULL_RANGE_MATCH_PATTERN.match(content_range)
                             if match:
                                 content_length = int(match.group(3))
 

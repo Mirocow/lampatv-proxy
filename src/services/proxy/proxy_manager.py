@@ -1,10 +1,10 @@
-import logging
 import random
 from typing import List, Dict, Optional
 
 import httpx
 
-from src.models.interfaces import IHttpClientFactory, ITimeoutConfigurator, IProxyManager
+from src.utils.logger import get_logger
+from src.models.interfaces import IHttpClientFactory, ITimeoutConfigurator, IProxyManager, IConfig
 from src.models.responses import ProxyStatsResponse
 
 
@@ -13,13 +13,16 @@ class ProxyManager(IProxyManager):
     Менеджер для работы с прокси
     """
 
-    def __init__(self, http_factory: IHttpClientFactory, timeout_configurator: ITimeoutConfigurator):
+    def __init__(self,
+                 config: IConfig,
+                 http_factory: IHttpClientFactory,
+                 timeout_configurator: ITimeoutConfigurator):
+        self.config = config
         self.http_factory = http_factory
         self.timeout_configurator = timeout_configurator
         self._working_proxies: List[str] = []
         self._proxy_stats: Dict[str, Dict[str, int]] = {}
-        self.logger = logging.getLogger('lampa-proxy-manager')
-        self.logger.info("ProxyManager initialized with HttpClientFactory")
+        self.logger = get_logger('proxy-manager', self.config.log_level)
 
     async def validate_proxies(self, proxy_list: List[str]) -> List[str]:
         """
@@ -66,6 +69,7 @@ class ProxyManager(IProxyManager):
                 verify_ssl=False,  # Отключаем проверку SSL для прокси
                 follow_redirects=True
             ) as client:
+
                 #response = await client.get("http://httpbin.org/ip")
                 # Используем несколько тестовых URL
                 test_urls = [

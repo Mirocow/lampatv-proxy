@@ -27,6 +27,9 @@ class AppConfig(IConfig):
         self._proxy_test_timeout = int(os.getenv('PROXY_TEST_TIMEOUT', '10'))
         self._max_proxy_retries = int(os.getenv('MAX_PROXY_RETRIES', '3'))
         self._stream_timeout = float(os.getenv('STREAM_TIMEOUT', '60.0'))
+        self._our_domain = os.getenv('OUR_DOMAIN', '')
+        self._our_scheme = os.getenv('OUR_SCHEME', 'http')
+        self._replace_m3u8_domains = os.getenv('REPLACE_M3U8_DOMAINS', 'true').lower() == 'true'
 
         self._video_indicators = [
             'video/', 'application/x-mpegurl', 'application/vnd.apple.mpegurl',
@@ -55,7 +58,7 @@ class AppConfig(IConfig):
 
     def _setup_logging(self):
         logging.basicConfig(
-            level=self._log_level,
+            level=logging.WARNING,
             format='[%(asctime)s] [%(levelname)s] [%(name)s:%(lineno)d] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
@@ -181,3 +184,27 @@ class AppConfig(IConfig):
     @property
     def proxy_list(self) -> List[str]:
         return self._proxy_list
+
+    @property
+    def our_domain(self) -> str:
+        return self._our_domain
+
+    @our_domain.setter
+    def our_domain(self, value: str) -> None:
+        self._our_domain = value
+
+    @property
+    def our_scheme(self) -> str:
+        return self._our_scheme
+
+    @property
+    def replace_m3u8_domains(self) -> str:
+        return self._replace_m3u8_domains
+
+    @property
+    def debug_mode(self) -> str:
+        return self._debug_mode
+
+    @debug_mode.setter
+    def debug_mode(self, value: str) -> None:
+        self._debug_mode = value

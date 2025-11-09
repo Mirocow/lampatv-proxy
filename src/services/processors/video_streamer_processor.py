@@ -1,27 +1,30 @@
 import asyncio
-import logging
-import re
 from typing import Dict, Optional, Tuple, AsyncGenerator
 
 import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-from src.models.interfaces import IVideoStreamer, IConfig, IHttpClientFactory, IContentInfoGetter, IProxyGenerator, ITimeoutConfigurator
+from src.utils.url_utils import FULL_RANGE_MATCH_PATTERN, RANGE_MATCH_PATTERN
+from src.utils.logger import get_logger
+from src.models.interfaces import IVideoStreamerProcessor, IConfig, IHttpClientFactory, IContentInfoGetter, IProxyGenerator, ITimeoutConfigurator
 
 
-class VideoStreamer(IVideoStreamer):
+class VideoStreamerProcessor(IVideoStreamerProcessor):
     """Потоковая передача видео"""
 
-    def __init__(self, config: IConfig, http_factory: IHttpClientFactory,
-                 content_getter: IContentInfoGetter, proxy_generator: IProxyGenerator,
+    def __init__(self,
+                 config: IConfig,
+                 http_factory: IHttpClientFactory,
+                 content_getter: IContentInfoGetter,
+                 proxy_generator: IProxyGenerator,
                  timeout_configurator: ITimeoutConfigurator):
         self.config = config
         self.http_factory = http_factory
         self.content_getter = content_getter
         self.proxy_generator = proxy_generator
         self.timeout_configurator = timeout_configurator
-        self.logger = logging.getLogger('lampa-proxy-video-streamer')
+        self.logger = get_logger('video-streamer', self.config.log_level)
 
     async def stream_video(self,
                            target_url: str,
@@ -116,10 +119,12 @@ class VideoStreamer(IVideoStreamer):
                         self.logger.error(
                             f"Video not found (404): {target_url}")
                         return
+
                     elif response.status_code == 416:
                         self.logger.error(
                             f"Range not satisfiable (416): {target_url}")
                         return
+
                     elif response.status_code >= 400:
                         self.logger.error(
                             f"Source server error {response.status_code}: {target_url}")
@@ -200,7 +205,7 @@ class VideoStreamer(IVideoStreamer):
     def _get_expected_bytes(self, content_range: str, response_content_length: str) -> int:
         if content_range:
             # Парсим Content-Range: bytes start-end/total
-            match = re.match(r'bytes\s+(\d+)-(\d+)/(\d+)', content_range)
+            match = FULL_RANGE_MATCH_PATTERN.match(content_range)
             if match:
                 range_start = int(match.group(1))
                 range_end = int(match.group(2))
@@ -263,7 +268,7 @@ class VideoStreamer(IVideoStreamer):
             return 0, file_size - 1 if file_size > 0 else 0
 
         try:
-            range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
+            range_match = RANGE_MATCH_PATTERN.match(range_header)
             if not range_match:
                 return 0, file_size - 1 if file_size > 0 else 0
 

@@ -1,9 +1,9 @@
-import logging
 from typing import Dict, Any, Optional, Tuple, Union
 import json
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 
+from src.utils.logger import get_logger
 from src.models.interfaces import IContentProcessor, IConfig
 from src.utils.url_utils import (
     decode_base64_url, parse_encoded_data, build_url,
@@ -15,10 +15,12 @@ from src.models.responses import ProxyResponse
 class RequestHandler:
     """Обработчик запросов с поддержкой всех типов кодирования"""
 
-    def __init__(self, content_processor: IContentProcessor, config: IConfig):
+    def __init__(self,
+                 content_processor: IContentProcessor,
+                 config: IConfig):
         self.content_processor = content_processor
         self.config = config
-        self.logger = logging.getLogger('lampa-proxy-request-handler')
+        self.logger = get_logger('request-handler', self.config.log_level)
 
     async def handle_request(
         self,

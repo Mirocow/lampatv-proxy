@@ -7,10 +7,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
-    environment:
-      - PYTHONPATH=/app/src
-    env_file:
-      - .env
+    # environment:
+    #   - PYTHONPATH=/app/src
+    # env_file:
+    #   - .env
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -30,7 +30,7 @@ services:
     ports:
       - "5678:5678"
     environment:
-      - PYTHONPATH=/app/src
+      # - PYTHONPATH=/app/src
       - LOG_LEVEL=ERROR
       - USE_PROXY=false
       - PROXY_TEST_URL=http://httpbin.org/ip
@@ -47,8 +47,8 @@ services:
       - MAX_REQUEST_SIZE=1048576
       - HEAD_REQUEST_TIMEOUT=10
       - PYDEVD_DISABLE_FILE_VALIDATION=1
-    env_file:
-      - .env
+    # env_file:
+    #   - .env
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro
@@ -62,10 +62,10 @@ services:
       dockerfile: Dockerfile.dev
     command: >
       sh -c "python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m uvicorn src.main:app --host 0.0.0.0 --port 8080"
-    environment:
-      - PYTHONPATH=/app/src
-    env_file:
-      - .env
+    # environment:
+    #   - PYTHONPATH=/app/src
+    # env_file:
+    #   - .env
     ports:
       - "8080:8080"
       - "5678:5678"

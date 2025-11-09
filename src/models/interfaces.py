@@ -1,6 +1,6 @@
+import httpx
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, List, Any, AsyncGenerator
-import httpx
 from fastapi.responses import StreamingResponse
 
 from src.models.responses import (
@@ -144,7 +144,7 @@ class IContentInfoGetter(ABC):
     async def get_content_info(self, url: str, headers: Dict = None, use_head: bool = True) -> ContentInfoResponse: ...
 
 
-class IVideoStreamer(ABC):
+class IVideoStreamerProcessor(ABC):
     """Интерфейс потоковой передачи видео"""
 
     @abstractmethod
@@ -155,6 +155,17 @@ class IVideoStreamer(ABC):
 
 
 class IRequestProcessor(ABC):
+    """Интерфейс обработчика запросов"""
+
+    @abstractmethod
+    async def process_request(self,
+                           target_url: str,
+                           method: str = 'GET',
+                           data: Any = None,
+                           headers: Dict = None) -> AsyncGenerator[ProxyResponse, None]: ...
+
+
+class Im3u8Processor(ABC):
     """Интерфейс обработчика запросов"""
 
     @abstractmethod
